@@ -1,0 +1,62 @@
+# 🗺️ G5S | Spatial Conflict Analysis & Locational Criteria Platform
+
+An interactive **R Shiny** Web Application engineered for automated spatial conflict screening, locational criteria assessment, and preliminary environmental licensing reports in the State of Minas Gerais, Brazil.
+
+Developed for **G5S Projetos e Consultoria Ambiental**, the system dynamically interfaces with official state spatial data infrastructures via the **Web Feature Service (WFS)** protocol to evaluate geographic constraints under **DN COPAM n.º 217/2017**.
+
+---
+
+## 🌟 Key Features
+
+* **Real-time WFS Integration:** Connects directly to the GeoServer of the State System for Environment and Water Resources (**IDE-SISEMA**), consuming live spatial feature layers without local database clutter.
+* **Flexible Spatial Input Methods:**
+  * **File Upload:** Import enterprise boundaries directly via Shapefile (.zip), KML, or GeoJSON.
+  * **Manual Coordinates:** Generate buffered Area of Direct Influence (ADA) polygons instantly from decimal coordinates and customized radiuses.
+  * **Interactive On-Screen Drawing:** Trace custom polygon geometries directly on top of satellite and topographic basemaps.
+* **Automated DN COPAM 217/2017 Batch Filter:** Single-click feature selector pre-filters critical regulatory layers (Conservation Units, Buffer Zones, APPs, Ramsar Sites, Cavity Potential, Water Conflict Areas, etc.).
+* **Spatial Intersection Engine:**
+  * Computes geometric intersections using `sf` in UTM projection (SIRGAS 2000 / UTM 23S - EPSG:31983).
+  * Evaluates specific attribute criteria (e.g., Cavity Potential grades, Water Body Framing).
+* **Interactive Conflict Visualization:** Displays intersected spatial features on a dedicated Leaflet map with rich attribute popups and geometry group controls.
+* **Automated Technical Report Generator:** Compiles spatial screening findings into a preliminary legal report (HTML/PDF ready to print) and structured Excel workbooks (.xlsx).
+* **Vector Conflict Package Export:** Downloads all intercepted official geometries as ready-to-use Shapefile archives (.zip).
+* **Resource Security Management:** Features an automated 5-minute client inactivity session timeout to optimize server performance.
+
+---
+
+## 📜 Regulatory & Legal Framework
+
+The platform evaluates locational weights and spatial prohibitions according to **Deliberação Normativa COPAM n.º 217/2017** (Tables 4 and 5):
+
+* **Weight 2 Criteria:** Full Protection Conservation Units, Extreme/Special Priority Vegetation Suppression Areas, Ramsar Sites.
+* **Weight 1 Criteria:** Native Vegetation Suppression, Buffer Zones (3 km radius), Sustainable Use Conservation Units, Biosphere Reserves, Ecological Corridors, Water Conflict Areas, High/Very High Cavity Potential.
+* **Severe Restrictions & Prohibitions:** Permanent Preservation Areas (APP - State Law 20.922/2013), Atlantic Forest Biosphere (Federal Law 11.428/2006), Airport Security Areas (ASA), Special Class Water Bodies.
+
+---
+
+## 🛠️ Tech Stack & Dependencies
+
+Built with **R** leveraging modern spatial analysis and UI libraries:
+
+* **UI & Layout:** `shiny`, `bslib` (Bootswatch Zephyr theme), `shinyWidgets`
+* **Geospatial Processing:** `sf` (S2 engine toggled for planar topology), `geojsonsf`, `jsonlite`
+* **Interactive Mapping:** `leaflet`, `leaflet.extras`
+* **Data Retrieval & WFS:** `httr`, `xml2`
+* **Data Visualization & Export:** `DT`, `writexl`, `rmarkdown`
+
+---
+
+## 🚀 How to Run Locally
+
+### Prerequisites
+Ensure you have [R](https://cloud.r-project.org/) and [RStudio](https://posit.co/download/rstudio-desktop/) installed.
+
+### 1. Install Dependencies
+Run the following code in your R environment to install all required packages:
+
+```r
+install.packages(c(
+  "shiny", "leaflet", "leaflet.extras", "sf", "DT", "dplyr", 
+  "bslib", "shinyWidgets", "geojsonsf", "jsonlite", "writexl", 
+  "httr", "xml2", "rmarkdown"
+))
