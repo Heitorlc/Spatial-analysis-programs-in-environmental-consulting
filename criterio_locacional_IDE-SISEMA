@@ -1,0 +1,749 @@
+# ==============================================================================
+# G5S Environmental Management | SPATIAL CONFLICT ANALYSIS PLATFORM
+# Version: 9.4 (Stable WFS Mapping + Safe Grouping + Polished UI)
+# ==============================================================================
+
+library(shiny)
+library(leaflet)
+library(leaflet.extras)
+library(sf)
+library(DT)
+library(dplyr)
+library(bslib)
+library(shinyWidgets)
+library(geojsonsf)
+library(jsonlite)
+library(writexl)
+library(httr)   
+library(xml2)   
+library(rmarkdown) 
+
+# TECHNICAL CONFIGURATIONS
+sf_use_s2(FALSE) 
+options(shiny.maxRequestSize = 100 * 1024^2) 
+
+# PROJECTION DEFINITIONS
+CRS_METRICO <- 31983 # SIRGAS 2000 / UTM 23S
+CRS_TELA    <- 4326  # WGS 84
+
+# IDE-SISEMA WFS BASE URL
+WFS_BASE_URL <- "https://geoserver.meioambiente.mg.gov.br/IDE/wfs"
+
+# ==========================================
+# UI - G5S CORPORATE LAYOUT
+# ==========================================
+ui <- page_navbar(
+  id = "nav_tabs",
+  title = span("G5S | Análise de Critérios Locacionais para Licenciamento Ambiental", style = "font-weight: bold; color: white;"),
+  theme = bs_theme(version = 5, bootswatch = "zephyr", primary = "#18bc9c"),
+  
+  header = tags$head(
+    tags$style(HTML("
+      .navbar { background-color: #001a33 !important; border-bottom: 2px solid #18bc9c; }
+      .navbar-brand, .nav-link { color: white !important; }
+      .navbar .active > .nav-link { color: #18bc9c !important; font-weight: bold; }
+      .sidebar { z-index: 1000 !important; }
+      .card { overflow: visible !important; }
+      .card-body { overflow: visible !important; }
+      .scrollable-info { max-height: 780px; overflow-y: auto; }
+      body { padding-bottom: 40px; } 
+    ")),
+    
+    # --- INACTIVITY TIMEOUT SCRIPT (5 MINUTES) ---
+    tags$script(HTML("
+      var inactivityTime = function () {
+        var time;
+        window.onload = resetTimer;
+        document.onmousemove = resetTimer;
+        document.onkeypress = resetTimer;
+        document.onclick = resetTimer;
+        document.onscroll = resetTimer;
+        
+        function logout() {
+          Shiny.setInputValue('inactivity_timeout', true);
+        }
+        function resetTimer() {
+          clearTimeout(time);
+          time = setTimeout(logout, 300000);
+        }
+      };
+      inactivityTime();
+    "))
+  ),
+  
+  footer = tags$footer(
+    style = "position: fixed; bottom: 0; width: 100%; text-align: center; padding: 10px; background-color: #001a33; color: white; font-size: 0.85em; border-top: 1px solid #18bc9c; z-index: 1050;",
+    tags$a(href = "https://grupog5s.com.br/", "G5S Projetos e Consultoria", target = "_blank", style = "color: #18bc9c; text-decoration: none; font-weight: bold;"),
+    " | Consultor Ambiental: Heitor C. Lacerda | ",
+    tags$a(href = "https://www.linkedin.com/in/heitorclacerda/", "Linkedin", target = "_blank", style = "color: #18bc9c; text-decoration: none; font-weight: bold;"),
+    " | ",
+    tags$a(href = "https://sites.google.com/view/heitorcarvalholacerda/in%C3%ADcio", "Site Profissional", target = "_blank", style = "color: #18bc9c; text-decoration: none; font-weight: bold;")
+  ),
+  
+  # --- TAB 1: GEOGRAPHIC ANALYSIS ---
+  nav_panel(
+    title = "Análise Geográfica",
+    value = "tab_analise", 
+    icon = icon("earth-americas"),
+    layout_sidebar(
+      sidebar = sidebar(
+        width = 400,
+        title = "Painel de Controle",
+        
+        card(
+          card_header("1. Inserir Área de Interesse", icon = icon("location-dot")),
+          accordion(
+            accordion_panel(
+              "Importar Área do Empreendimento",
+              fileInput("arquivo_geo", "KML, GeoJSON ou Shapefile (ZIP):", accept = c(".kml", ".geojson", ".zip"))
+            ),
+            accordion_panel(
+              "Inserir Coordenadas Manuais",
+              numericInput("lat_manual", "Latitude (Dec):", value = -20.75, min = -90, max = 90),
+              numericInput("lon_manual", "Longitude (Dec):", value = -42.88, min = -180, max = 180),
+              numericInput("raio_manual", "Raio do Ponto (m):", value = 100, min = 1),
+              actionButton("gerar_coord", "Gerar da Coordenada", class = "btn-outline-primary btn-sm w-100")
+            )
+          ),
+          hr(),
+          p("Exportar Geometria Criada:", style = "font-weight: bold; font-size: 0.9em; margin-bottom: 8px;"),
+          layout_columns(
+            downloadButton("baixar_kml", "KML", class = "btn-outline-secondary btn-sm"),
+            downloadButton("baixar_shp", "SHP (.zip)", class = "btn-outline-secondary btn-sm")
+          )
+        ),
+        
+        card(
+          card_header("2. Raio de Influência", icon = icon("ruler-combined")),
+          numericInput("raio_buffer", "Distância extra (m):", value = 0, min = 0, step = 50)
+        ),
+        
+        card(
+          card_header("3. Camadas Oficiais (IDE-SISEMA)", icon = icon("cloud-arrow-down")),
+          uiOutput("wfs_status_ui"), 
+          
+          actionButton("btn_dn217", "Selecionar Pacote DN COPAM 217/2017", icon = icon("check-double"), class = "btn-info btn-sm w-100", style = "margin-bottom: 10px; color: white; font-weight: bold;"),
+          
+          pickerInput(
+            "camadas_selecionadas", "Selecione as Bases do SISEMA:", 
+            choices = NULL, 
+            multiple = TRUE,
+            options = pickerOptions(
+              container = "body", actionsBox = TRUE, 
+              deselectAllText = "Limpar", selectAllText = "Todas as Camadas",
+              noneSelectedText = "Aguardando conexão...", liveSearch = TRUE, size = 10
+            )
+          )
+        ),
+        
+        actionButton("rodar_analise", "Processar Análise", class = "btn-success btn-lg w-100", icon = icon("play")),
+        hr(),
+        actionButton("limpar_tudo", "Limpar Projeto", class = "btn-outline-danger w-100")
+      ),
+      
+      layout_columns(
+        col_widths = c(8, 4), 
+        
+        card(
+          full_screen = TRUE,
+          card_header("4. Seleção e Visualização", icon = icon("map")),
+          leafletOutput("mapa_principal", height = "780px")
+        ),
+        
+        card(
+          class = "scrollable-info",
+          card_header("Suporte Normativo - COPAM", icon = icon("book")),
+          accordion(
+            open = c("locacionais", "restricao"), 
+            
+            accordion_panel(
+              "Critérios Locacionais",
+              value = "locacionais",
+              icon = icon("list-ol"),
+              HTML("
+                <div style='font-size: 0.85em; text-align: justify;'>
+                  <p><i>O enquadramento locacional soma pesos à matriz do empreendimento. Maior peso implica maior rigor no licenciamento.</i></p>
+                  <ul style='padding-left: 15px;'>
+                    <li style='margin-bottom: 5px;'><b>Peso 2:</b> Unidade de Conservação de Proteção Integral.</li>
+                    <li style='margin-bottom: 5px;'><b>Peso 2:</b> Supressão de vegetação em áreas prioritárias (extrema ou especial).</li>
+                    <li style='margin-bottom: 5px;'><b>Peso 2:</b> Áreas designadas como Sítios Ramsar.</li>
+                    <li style='margin-bottom: 5px;'><b>Peso 1:</b> Supressão de vegetação nativa.</li>
+                    <li style='margin-bottom: 5px;'><b>Peso 1:</b> Zona de Amortecimento de UC Proteção Integral (ou raio de 3 km).</li>
+                    <li style='margin-bottom: 5px;'><b>Peso 1:</b> UC de Uso Sustentável (exceto APA).</li>
+                    <li style='margin-bottom: 5px;'><b>Peso 1:</b> Reserva da Biosfera.</li>
+                    <li style='margin-bottom: 5px;'><b>Peso 1:</b> Corredor Ecológico.</li>
+                    <li style='margin-bottom: 5px;'><b>Peso 1:</b> Drenagem a montante de curso d’água classe especial.</li>
+                    <li style='margin-bottom: 5px;'><b>Peso 1:</b> Captação em Área de Conflito Hídrico.</li>
+                    <li style='margin-bottom: 5px;'><b>Peso 1:</b> Área com potencial de cavidades (Alto/Muito Alto).</li>
+                  </ul>
+                </div>
+              ")
+            ),
+            
+            accordion_panel(
+              "Restrição e Vedação",
+              value = "restricao",
+              icon = icon("ban"),
+              HTML("
+                <div style='font-size: 0.85em; text-align: justify;'>
+                  <p><i>Feições que impõem restrição severa ou proibição total ao empreendimento.</i></p>
+                  <ul style='padding-left: 15px;'>
+                    <li style='margin-bottom: 5px;'><b>APP:</b> Lei Estadual n.º 20.922/2013.</li>
+                    <li style='margin-bottom: 5px;'><b>Controle de Águas Subterrâneas:</b> COPAM-CERH.</li>
+                    <li style='margin-bottom: 5px;'><b>ASA (Segurança Aeroportuária):</b> Lei 12.725/2012.</li>
+                    <li style='margin-bottom: 5px;'><b>Mata Atlântica:</b> Lei Federal n.º 11.428/2006.</li>
+                    <li style='margin-bottom: 5px;'><b>Classe Especial:</b> Res. Conama 430/2011.</li>
+                    <li style='margin-bottom: 5px;'><b>Rio de Preservação Permanente:</b> Lei 15.082/2004.</li>
+                    <li style='margin-bottom: 5px;'><b>Terras Indígenas / Quilombolas.</b></li>
+                    <li style='margin-bottom: 5px;'><b>UC de Proteção Integral.</b></li>
+                  </ul>
+                </div>
+              ")
+            )
+          )
+        )
+      )
+    )
+  ),
+  
+  # --- TAB 2: RESULTS TABLE ---
+  nav_panel(
+    title = "Resultados Técnicos",
+    value = "tab_resultados", 
+    icon = icon("table-list"),
+    card(
+      card_header("Relatório Geral de Sobreposição"),
+      div(style = "padding: 10px;", downloadButton("baixar_relatorio", "Baixar Excel", class = "btn-success")),
+      DTOutput("tabela_relatorio")
+    )
+  ),
+  
+  # --- TAB 3: CONFLICT MAP ---
+  nav_panel(
+    title = "Mapa de Conflitos",
+    value = "tab_mapa", 
+    icon = icon("circle-exclamation"),
+    card(
+      full_screen = TRUE,
+      card_header(icon("map-location-dot"), " Detalhamento das Geometrias Interceptadas via WFS"),
+      
+      div(style = "padding: 10px 15px; border-bottom: 1px solid #eee;",
+          downloadButton("baixar_conflitos_shp", "Baixar Camadas de Conflito (.zip)", class = "btn-warning btn-sm")
+      ),
+      
+      leafletOutput("mapa_sobreposicao", height = "720px")
+    )
+  ),
+  
+  # --- TAB 4: AUTOMATED REPORT GENERATOR ---
+  nav_panel(
+    title = "Emissão de Laudo",
+    value = "tab_laudo",
+    icon = icon("file-pdf"),
+    layout_sidebar(
+      sidebar = sidebar(
+        width = 400,
+        title = "Dados Opcionais do Relatório",
+        
+        card(
+          card_header("Informações do Empreendimento"),
+          textInput("laudo_empreendimento", "Nome do Empreendimento:", placeholder = "Ex: Laticínio Sabor da Serra"),
+          textInput("laudo_atividade", "Atividade/Classe:", placeholder = "Ex: F-3-0-1 (Processamento de Leite)"),
+          textInput("laudo_municipio", "Município:", placeholder = "Ex: Viçosa - MG"),
+          textInput("laudo_empreendedor", "Empreendedor/CNPJ:", placeholder = "Ex: Empresa X / 00.000.000/0001-00"),
+          textInput("laudo_car", "CAR ou Matrícula:", placeholder = "Ex: MG-3138609...")
+        ),
+        
+        card(
+          card_header("Responsabilidade Técnica"),
+          textInput("laudo_rt", "Responsável Técnico:", value = "Heitor C. Lacerda (Consultor Ambiental G5S)")
+        ),
+        
+        actionButton("gerar_texto_laudo", "Gerar Minuta do Laudo", class = "btn-primary btn-lg w-100", icon = icon("pen-to-square"))
+      ),
+      
+      card(
+        card_header("Minuta do Relatório Preliminar (Preview)", icon = icon("eye")),
+        
+        div(style = "padding: 10px 15px; border-bottom: 1px solid #eee; display: flex; justify-content: flex-end;",
+            uiOutput("ui_download_pdf_btn")
+        ),
+        
+        div(style = "padding: 20px; max-height: 650px; overflow-y: auto;",
+            uiOutput("preview_laudo")
+        )
+      )
+    )
+  )
+)
+
+# ==========================================
+# SERVER
+# ==========================================
+server <- function(input, output, session) {
+  
+  # --- TIMEOUT OBSERVER ---
+  observeEvent(input$inactivity_timeout, {
+    showModal(modalDialog(
+      title = "Sessão Expirada por Inatividade",
+      "Sua sessão foi desconectada para economizar os recursos do servidor após 5 minutos sem uso. Por favor, recarregue a página (F5) para iniciar uma nova análise.",
+      easyClose = FALSE, footer = NULL
+    ))
+    session$close() 
+  })
+  
+  # REACTIVE STORAGE
+  ada_reativa <- reactiveVal(NULL)
+  resultados_relatorio <- reactiveVal(data.frame())
+  conflitos_geo <- reactiveVal(list())
+  catalogo_wfs <- reactiveVal(list())
+  laudo_pronto <- reactiveVal(FALSE)
+  laudo_raw_markdown <- reactiveVal("")
+  
+  # INITIAL STATE FOR PREVIEW
+  texto_minuta <- reactiveVal(HTML("<p style='color: gray; text-align: center; margin-top: 50px;'>Preencha os dados opcionais (se desejar), rode a análise espacial na primeira aba e clique em <b>'Gerar Minuta do Laudo'</b> para visualizar o documento preliminar.</p>"))
+  output$preview_laudo <- renderUI({ texto_minuta() })
+  
+  # DYNAMIC PDF BUTTON RENDERER
+  output$ui_download_pdf_btn <- renderUI({
+    if(isTRUE(laudo_pronto())) {
+      downloadButton("baixar_pdf_laudo", "Baixar Laudo PDF", class = "btn-danger btn-sm", icon = icon("file-pdf"))
+    } else {
+      actionButton("baixar_pdf_disabled", "Baixar Laudo PDF", class = "btn-secondary btn-sm", disabled = TRUE, icon = icon("file-pdf"))
+    }
+  })
+  
+  status_wfs <- reactiveVal(tags$p("⏳ Carregando catálogo do servidor...", style = "color: orange; font-size: 0.9em; font-weight: bold;"))
+  output$wfs_status_ui <- renderUI({ status_wfs() })
+  
+  # --- INITIAL CONNECTIONS TO SERVER ---
+  observe({
+    tryCatch({
+      req_cap <- GET(paste0(WFS_BASE_URL, "?service=wfs&version=2.0.0&request=GetCapabilities"))
+      xml_doc <- read_xml(content(req_cap, "text"))
+      ns <- xml_ns(xml_doc)
+      
+      feature_types <- xml_find_all(xml_doc, ".//wfs:FeatureType", ns)
+      
+      l_names  <- xml_text(xml_find_first(feature_types, ".//wfs:Name", ns))
+      l_titles <- xml_text(xml_find_first(feature_types, ".//wfs:Title", ns))
+      l_titles <- ifelse(is.na(l_titles) | l_titles == "", l_names, l_titles)
+      
+      choices_vec <- setNames(l_names, l_titles)
+      choices_vec <- choices_vec[order(names(choices_vec))]
+      
+      catalogo_wfs(choices_vec)
+      
+      updatePickerInput(session, "camadas_selecionadas", 
+                        choices = choices_vec, 
+                        options = pickerOptions(noneSelectedText = "Selecione as camadas..."))
+      
+      status_wfs(tags$p("✅ Conectado ao IDE-SISEMA (WFS)", style = "color: #18bc9c; font-size: 0.9em; font-weight: bold;"))
+      
+    }, error = function(e) {
+      status_wfs(tags$p("❌ Erro ao conectar no servidor do Governo.", style = "color: red; font-size: 0.9em; font-weight: bold;"))
+    })
+  })
+  
+  # --- ADVANCED BATCH LAYER FILTERING ---
+  observeEvent(input$btn_dn217, {
+    req(catalogo_wfs())
+    c_vec <- catalogo_wfs()
+    
+    regex_in <- "(?i)(unidade.*conserva[çc][ãa]o|zona.*amortecimento|s[íi]tio.*ramsar|reserva.*biosfera|corredor.*ecol[óo]gico|conflito.*h[íi]drico|cavidade|aeroportu[áa]ria|rio.*preserva[çc][ãa]o|terra.*ind[íi]gena|terra.*quilombola|raio.*restri[çc][ãa]o|patrim[ôo]nio cultural|bens tombados|enquadramento|[áa]rea.*preserva[çc][ãa]o permanente|\\bapp\\b)"
+    regex_out <- "(?i)(im[óo]vel|im[óo]veis|lugares registrados|pmsh|pesquisas sobre esp[é]cies|rppn|saberes registrados|\\bzap\\b|\\bzee\\b|pscrmg)"
+    
+    camadas_alvo <- c_vec[grepl(regex_in, names(c_vec)) | grepl(regex_in, c_vec)]
+    camadas_alvo <- camadas_alvo[!(grepl(regex_out, names(camadas_alvo)) | grepl(regex_out, camadas_alvo))]
+    
+    updatePickerInput(session, "camadas_selecionadas", selected = camadas_alvo)
+    showNotification(paste(length(camadas_alvo), "camadas da DN 217 selecionadas!"), type = "message")
+  })
+  
+  # --- RENDER TAB 1 MAP ---
+  output$mapa_principal <- renderLeaflet({
+    leaflet() %>% 
+      addProviderTiles(providers$Esri.WorldImagery, group = "Satélite") %>%
+      addProviderTiles(providers$OpenTopoMap, group = "Relevo/Topografia") %>%
+      addProviderTiles(providers$CartoDB.Positron, group = "Mapa Minimalista") %>%
+      setView(-42.88, -20.75, 13) %>% 
+      addDrawToolbar(
+        targetGroup = "ada_draw", polylineOptions = FALSE, circleOptions = FALSE,
+        markerOptions = FALSE, circleMarkerOptions = FALSE,
+        polygonOptions = drawPolygonOptions(shapeOptions = drawShapeOptions(color = "#18bc9c", weight = 3))
+      ) %>%
+      addLayersControl(baseGroups = c("Satélite", "Relevo/Topografia", "Mapa Minimalista"), options = layersControlOptions(collapsed = TRUE))
+  })
+  
+  # --- UNIVERSAL GEOM SMART ZOOM ---
+  aplicar_zoom_inteligente <- function(ada_obj, message = "Área carregada e centralizada no mapa!") {
+    bbox <- sf::st_bbox(ada_obj)
+    tipo_geom <- as.character(sf::st_geometry_type(ada_obj, by_geometry = FALSE))
+    
+    proxy <- leafletProxy("mapa_principal") %>% clearGroup("ada_draw")
+    
+    if(any(grepl("POINT", tipo_geom))) {
+      proxy <- proxy %>% addCircleMarkers(data = ada_obj, group = "ada_draw", color = "#f39c12", radius = 8, fillOpacity = 0.8)
+    } else if (any(grepl("LINE", tipo_geom))) {
+      proxy <- proxy %>% addPolylines(data = ada_obj, group = "ada_draw", color = "#f39c12", weight = 4)
+    } else {
+      proxy <- proxy %>% addPolygons(data = ada_obj, group = "ada_draw", color = "#f39c12", weight = 3, fillOpacity = 0.3)
+    }
+    
+    if(isTRUE(as.numeric(bbox[["xmin"]]) == as.numeric(bbox[["xmax"]])) && isTRUE(as.numeric(bbox[["ymin"]]) == as.numeric(bbox[["ymax"]]))) {
+      proxy %>% setView(lng = as.numeric(bbox[["xmin"]]), lat = as.numeric(bbox[["ymin"]]), zoom = 16)
+    } else {
+      proxy %>% fitBounds(as.numeric(bbox[["xmin"]]), as.numeric(bbox[["ymin"]]), 
+                          as.numeric(bbox[["xmax"]]), as.numeric(bbox[["ymax"]]))
+    }
+    showNotification(message, type = "message")
+  }
+  
+  # --- SPATIAL INPUT WATCHERS ---
+  observeEvent(input$mapa_principal_draw_new_feature, {
+    feat <- input$mapa_principal_draw_new_feature
+    ada <- geojsonsf::geojson_sf(jsonlite::toJSON(feat, auto_unbox = TRUE, force = TRUE)) %>% sf::st_set_crs(4326) %>% sf::st_make_valid()
+    ada_reativa(ada)
+  })
+  
+  observeEvent(input$arquivo_geo, {
+    req(input$arquivo_geo)
+    ext <- tools::file_ext(input$arquivo_geo$name)
+    tryCatch({
+      if (tolower(ext) == "zip") {
+        temp_dir <- file.path(tempdir(), "upload_shp"); dir.create(temp_dir, showWarnings = FALSE)
+        unzip(input$arquivo_geo$datapath, exdir = temp_dir)
+        shp_file <- list.files(temp_dir, pattern = "\\.shp$", full.names = TRUE, ignore.case = TRUE)[1]
+        ada <- sf::st_read(shp_file, quiet = TRUE)
+      } else {
+        ada <- sf::st_read(input$arquivo_geo$datapath, quiet = TRUE)
+      }
+      ada <- ada %>% sf::st_zm(drop = TRUE) %>% sf::st_transform(4326) %>% sf::st_make_valid()
+      ada_reativa(ada)
+      aplicar_zoom_inteligente(ada)
+    }, error = function(e) { showNotification("Erro ao processar o arquivo vetorial.", type = "error") })
+  })
+  
+  observeEvent(input$gerar_coord, {
+    req(input$lat_manual, input$lon_manual, input$raio_manual)
+    ponto <- sf::st_as_sf(data.frame(x = input$lon_manual, y = input$lat_manual), coords = c("x", "y"), crs = 4326)
+    ponto_m <- sf::st_transform(ponto, CRS_METRICO)
+    ada <- sf::st_buffer(ponto_m, input$raio_manual) %>% sf::st_transform(4326)
+    ada_reativa(ada)
+    aplicar_zoom_inteligente(ada, "Buffer gerado e centralizado com sucesso!")
+  })
+  
+  output$baixar_kml <- downloadHandler(filename = function() { paste0("ADA_G5S_", Sys.Date(), ".kml") }, content = function(file) { sf::st_write(ada_reativa(), file, driver = "KML", delete_dsn = TRUE, quiet = TRUE) })
+  output$baixar_shp <- downloadHandler(
+    filename = function() { paste0("ADA_G5S_Shapefile_", Sys.Date(), ".zip") },
+    content = function(file) {
+      req(ada_reativa())
+      temp_dir <- file.path(tempdir(), "shp_export"); dir.create(temp_dir, showWarnings = FALSE)
+      sf::st_write(ada_reativa(), dsn = temp_dir, layer = "ADA_G5S", driver = "ESRI Shapefile", delete_layer = TRUE, quiet = TRUE)
+      owd <- setwd(temp_dir); on.exit(setwd(owd))
+      utils::zip(zipfile = file, files = list.files(".", pattern = "^ADA_G5S\\.(shp|shx|dbf|prj|cpg)$"))
+    }
+  )
+  
+  # --- DIRECT WFS SPATIAL INTERSECTIONS ---
+  observeEvent(input$rodar_analise, {
+    req(ada_reativa()); req(input$camadas_selecionadas)
+    
+    withProgress(message = 'Consultando Geoserver Estadual...', value = 0, {
+      ada_m <- sf::st_transform(ada_reativa(), 31983)
+      if(!is.na(input$raio_buffer) && input$raio_buffer > 0) ada_m <- sf::st_buffer(ada_m, input$raio_buffer)
+      
+      ada_4326 <- sf::st_transform(ada_m, 4326)
+      bbox <- sf::st_bbox(ada_4326)
+      bbox_str <- paste(bbox["xmin"], bbox["ymin"], bbox["xmax"], bbox["ymax"], "EPSG:4326", sep=",")
+      
+      lista_res <- list(); geo_full_list <- list()
+      choices_vec <- catalogo_wfs()
+      
+      for(camada in input$camadas_selecionadas) {
+        titulo_amigavel <- names(choices_vec)[choices_vec == camada]
+        if(length(titulo_amigavel) == 0) titulo_amigavel <- camada 
+        
+        incProgress(1/length(input$camadas_selecionadas), detail = titulo_amigavel)
+        row_data <- data.frame(Camada = titulo_amigavel, Veredito = "✅ NADA CONSTA", Detalhes = "Área livre.", stringsAsFactors = FALSE)
+        
+        tryCatch({
+          url_req <- URLencode(paste0(
+            WFS_BASE_URL, 
+            "?service=WFS&version=1.0.0&request=GetFeature&typeName=", camada,
+            "&outputFormat=application/json&srsName=EPSG:4326&bbox=", bbox_str
+          ))
+          
+          dados <- sf::st_read(url_req, quiet = TRUE)
+          
+          if(nrow(dados) > 0) {
+            dados_m <- sf::st_transform(dados, 31983) %>% sf::st_make_valid() %>% sf::st_buffer(0)
+            inter_idx <- which(sf::st_intersects(dados_m, ada_m, sparse = FALSE))
+            
+            if(length(inter_idx) > 0) {
+              feicoes_conflito <- dados[inter_idx, ]
+              
+              row_data$Veredito <- "🚨 SOBREPOSIÇÃO"
+              row_data$Detalhes <- paste("Interceptou", length(inter_idx), "objeto(s).")
+              
+              # --- SPECIFIC LOGIC: CAVITY POTENTIAL ---
+              if(grepl("(?i)cavidade", titulo_amigavel) || grepl("(?i)cavidade", camada)) {
+                col_grau <- grep("(?i)grau_de_po", names(feicoes_conflito), value = TRUE)
+                if(length(col_grau) > 0) {
+                  graus <- na.omit(unique(feicoes_conflito[[col_grau[1]]]))
+                  graus_str <- paste(graus, collapse = ", ")
+                  
+                  if(length(graus) > 0 && isTRUE(any(grepl("(?i)alto", graus), na.rm = TRUE))) {
+                    row_data$Detalhes <- paste0("Interceptou ", length(inter_idx), " feição(ões). Grau de Potencialidade: ", toupper(graus_str), ".")
+                  } else if (length(graus) > 0) {
+                    row_data$Veredito <- "ℹ️ INFORMAÇÃO"
+                    row_data$Detalhes <- paste0("Inserida em polígono contínuo com Grau: ", toupper(graus_str), " (Não compõe critério restritivo da DN 217).")
+                  }
+                }
+              }
+              
+              popups <- apply(sf::st_drop_geometry(feicoes_conflito), 1, function(r) {
+                paste0("<b>Atributos Oficiais:</b><br>", paste0("<b>", names(r), "</b>: ", r, collapse = "<br>"))
+              })
+              feicoes_conflito$popup_info <- popups
+              geo_full_list[[titulo_amigavel]] <- sf::st_transform(feicoes_conflito, 4326)
+            }
+          }
+        }, error = function(e) {
+          row_data$Veredito <- "⚠️ FALHA WFS"; row_data$Detalhes = "Erro ao baixar do servidor."
+        })
+        lista_res[[titulo_amigavel]] <- row_data
+      }
+      
+      # --- POST-PROCESSING: TABLE CONSOLIDATION ONLY (Preserves SF integrity) ---
+      
+      # 1. Enquadramento de Corpos d'água
+      idx_enq <- grep("(?i)enquadramento", names(lista_res))
+      if(length(idx_enq) > 0) {
+        enq_conflitos <- Filter(function(x) x$Veredito == "🚨 SOBREPOSIÇÃO", lista_res[idx_enq])
+        row_enq_final <- data.frame(Camada = "Enquadramento de Corpos D'água (Bacias Hidrográficas)", 
+                                    Veredito = ifelse(length(enq_conflitos) > 0, "🚨 SOBREPOSIÇÃO", "✅ NADA CONSTA"), 
+                                    Detalhes = ifelse(length(enq_conflitos) > 0, paste("Interceptou", length(enq_conflitos), "bacia(s)."), "Área livre."), 
+                                    stringsAsFactors = FALSE)
+        lista_res <- lista_res[-idx_enq]
+        lista_res[["Enquadramento Consolidado"]] <- row_enq_final
+      }
+      
+      # 2. Áreas de Preservação Permanente (APPs)
+      idx_app <- grep("(?i)([áa]rea.*preserva[çc][ãa]o permanente|\\bapp\\b)", names(lista_res))
+      if(length(idx_app) > 0) {
+        app_conflitos <- Filter(function(x) x$Veredito == "🚨 SOBREPOSIÇÃO", lista_res[idx_app])
+        row_app_final <- data.frame(Camada = "Áreas de Preservação Permanente (APPs) - Consolidadas", 
+                                    Veredito = ifelse(length(app_conflitos) > 0, "🚨 SOBREPOSIÇÃO", "✅ NADA CONSTA"), 
+                                    Detalhes = ifelse(length(app_conflitos) > 0, paste("Interceptou", length(app_conflitos), "tipologia(s) de APP."), "Área livre."), 
+                                    stringsAsFactors = FALSE)
+        lista_res <- lista_res[-idx_app]
+        lista_res[["APPs Consolidadas"]] <- row_app_final
+      }
+      
+      resultados_relatorio(do.call(rbind, lista_res))
+      conflitos_geo(geo_full_list)
+      
+      # --- RENDER TAB 3 MAP (SAFE GROUPING INSTEAD OF BINDING) ---
+      output$mapa_sobreposicao <- renderLeaflet({
+        ada_tipo <- as.character(sf::st_geometry_type(ada_4326, by_geometry = FALSE))
+        m <- leaflet() %>% addProviderTiles(providers$Esri.WorldImagery)
+        
+        if(isTRUE(any(grepl("POINT", ada_tipo), na.rm = TRUE))) { 
+          m <- m %>% addCircleMarkers(data = ada_4326, color = "red", radius = 6, fillOpacity = 0.8, group = "Área de Estudo")
+        } else if (isTRUE(any(grepl("LINE", ada_tipo), na.rm = TRUE))) { 
+          m <- m %>% addPolylines(data = ada_4326, color = "red", weight = 3, group = "Área de Estudo")
+        } else { 
+          m <- m %>% addPolygons(data = ada_4326, color = "red", weight = 3, fill = F, group = "Área de Estudo") 
+        }
+        
+        geos <- conflitos_geo()
+        nomes_grupos <- c()
+        
+        if(length(geos) > 0) {
+          for(n in names(geos)) {
+            if(is.data.frame(geos[[n]]) && nrow(geos[[n]]) > 0) {
+              # Safe geometry extraction avoiding corrupt lines
+              valid_geom <- geos[[n]][!sf::st_is_empty(geos[[n]]), ]
+              
+              if(nrow(valid_geom) > 0) {
+                # Intelligent group renaming mapping
+                group_name <- n
+                if(grepl("(?i)enquadramento", n)) group_name <- "Enquadramento de Corpos D'água (Bacias Hidrográficas)"
+                if(grepl("(?i)([áa]rea.*preserva[çc][ãa]o permanente|\\bapp\\b)", n)) group_name <- "Áreas de Preservação Permanente (APPs) - Consolidadas"
+                
+                nomes_grupos <- c(nomes_grupos, group_name)
+                tipo <- as.character(sf::st_geometry_type(valid_geom, by_geometry = FALSE))
+                
+                if(isTRUE(any(grepl("POINT", tipo), na.rm = TRUE))) { 
+                  m <- m %>% addCircleMarkers(data = valid_geom, color = "yellow", radius = 7, popup = ~popup_info, group = group_name)
+                } else if (isTRUE(any(grepl("LINE", tipo), na.rm = TRUE))) { 
+                  m <- m %>% addPolylines(data = valid_geom, color = "yellow", weight = 4, popup = ~popup_info, group = group_name)
+                } else { 
+                  m <- m %>% addPolygons(data = valid_geom, color = "yellow", weight = 2, fillOpacity = 0.4, popup = ~popup_info, group = group_name) 
+                }
+              }
+            }
+          }
+          m <- m %>% addLayersControl(overlayGroups = c("Área de Estudo", unique(nomes_grupos)), options = layersControlOptions(collapsed = FALSE))
+        } else { 
+          m <- m %>% addLayersControl(overlayGroups = c("Área de Estudo"), options = layersControlOptions(collapsed = FALSE)) 
+        }
+        
+        b <- sf::st_bbox(ada_4326)
+        if(!is.na(b[["xmin"]])) {
+          if(isTRUE(as.numeric(b[["xmin"]]) == as.numeric(b[["xmax"]]))) {
+            m <- m %>% setView(lng = as.numeric(b[["xmin"]]), lat = as.numeric(b[["ymin"]]), zoom = 16)
+          } else {
+            m <- m %>% fitBounds(as.numeric(b[["xmin"]]), as.numeric(b[["ymin"]]), as.numeric(b[["xmax"]]), as.numeric(b[["ymax"]]))
+          }
+        }
+        m
+      })
+      
+      nav_select(id = "nav_tabs", selected = "tab_resultados")
+    })
+  })
+  
+  # --- REPORT TEMPLATE COMPILER ENGINE ---
+  observeEvent(input$gerar_texto_laudo, {
+    if(nrow(resultados_relatorio()) == 0) {
+      showNotification("Por favor, execute a análise geográfica na primeira aba antes de gerar o laudo.", type = "warning")
+      return()
+    }
+    
+    emp <- ifelse(input$laudo_empreendimento == "", "Empreendimento Não Informado", input$laudo_empreendimento)
+    mun <- ifelse(input$laudo_municipio == "", "Município Não Especificado", input$laudo_municipio)
+    ativ <- ifelse(input$laudo_atividade == "", "Atividade Não Especificada", input$laudo_atividade)
+    empreend <- ifelse(input$laudo_empreendedor == "", "Não Informado", input$laudo_empreendedor)
+    car <- ifelse(input$laudo_car == "", "Não Informado", input$laudo_car)
+    rt <- ifelse(input$laudo_rt == "", "Responsável Técnico da G5S", input$laudo_rt)
+    
+    res <- resultados_relatorio()
+    sobreposicoes <- res %>% filter(Veredito == "🚨 SOBREPOSIÇÃO") %>% pull(Camada)
+    
+    texto_conflitos <- if(length(sobreposicoes) > 0) {
+      paste0("Foram identificadas intersecções restritivas nas seguintes camadas oficiais:<br><ul style='padding-left: 20px;'>", 
+             paste0("<li><b>", sobreposicoes, "</b></li>", collapse = ""), 
+             "</ul>Sendo imprescindível a consulta normativa específica para fins de enquadramento (conforme as Tabelas 4 e 5 da DN COPAM 217/2017) e eventual anuência prévia dos órgãos competentes.")
+    } else {
+      "<b style='color: #27ae60;'>Nenhuma sobreposição restritiva direta foi identificada</b> com as camadas oficiais consultadas no servidor IDE-SISEMA para o limite geográfico estabelecido, considerando os pesos e vedações da DN 217."
+    }
+    
+    md_content <- paste0("
+---
+output: html_document
+---
+<div style='font-family: Arial, sans-serif; padding: 20px; line-height: 1.6; color: #333;'>
+  <div style='text-align: center; border-bottom: 3px solid #18bc9c; padding-bottom: 10px; margin-bottom: 20px;'>
+    <h2 style='color: #001a33; font-weight: bold; margin: 0;'>G5S PROJETOS E CONSULTORIA AMBIENTAL</h2>
+    <h4 style='color: #16a085; margin: 5px 0 0 0;'>LAUDO TÉCNICO PRELIMINAR - CRITÉRIOS LOCACIONAIS</h4>
+  </div>
+
+  <p><b>1. IDENTIFICAÇÃO DO PROJETO</b><br>
+  <b>Empreendimento:</b> ", emp, "<br>
+  <b>Empreendedor/CNPJ:</b> ", sk_emp = empreend, "<br>
+  <b>Atividade Prevista:</b> ", ativ, "<br>
+  <b>Localização Territorial:</b> ", mun, "<br>
+  <b>Registro do Imóvel (CAR/Matrícula):</b> ", car, "</p>
+
+  <p><b>2. CONTEXTUALIZAÇÃO METODOLÓGICA</b><br>
+  O presente laudo técnico formaliza a análise diagnóstica de viabilidade ambiental locacional preliminar. A triagem foi realizada por meio de cruzamentos geoespaciais automatizados via protocolo WFS (Web Feature Service), consumindo dados geoespaciais oficiais em tempo real diretamente do banco de dados geográficos do Estado de Minas Gerais (Infraestrutura de Dados Espaciais - IDE-SISEMA).</p>
+
+  <p><b>3. RESULTADOS DA TRIAGEM ESPACIAL</b><br>
+  A partir da delimitação vetorial da Área de Diretamente Afetada (ADA) submetida à plataforma, o processamento identificou o seguinte cenário diagnóstico em relação aos critérios restritivos:<br><br>
+  ", texto_conflitos, "</p>
+
+  <p><b>4. BASE LEGAL E DIRETRIZES TÉCNICAS</b><br>
+  As restrições avaliadas fundamentam-se estritamente nas regras de enquadramento locacional estipuladas pelas Tabelas 4 e 5 da <b>Deliberação Normativa COPAM n.º 217/2017</b>. Este documento possui caráter técnico-preliminar informativo, cabendo ao responsável legal a devida formalização dos processos junto aos órgãos ambientais fiscalizadores.</p>
+
+  <br><br><br>
+  <div style='text-align: center; margin-top: 50px;'>
+    <p>_____________________________________________________</p>
+    <b>", rt, "</b><br>
+    <span style='font-size: 0.85em; color: #7f8c8d;'>Documento emitido via Plataforma de Inteligência Locacional G5S</span>
+  </div>
+</div>
+<script>window.onload = function() { window.print(); }</script>
+")
+    
+    laudo_raw_markdown(md_content)
+    
+    minuta <- HTML(paste0("
+      <div style='font-family: Arial, sans-serif; line-height: 1.6; color: #333;'>
+        <h4 style='color: #001a33; text-align: center; font-weight: bold; border-bottom: 2px solid #18bc9c; padding-bottom: 10px;'>
+          LAUDO TÉCNICO PRELIMINAR - CRITÉRIOS LOCACIONAIS
+        </h4>
+        <p><b>1. IDENTIFICAÇÃO DO PROJETO</b><br>
+        <b>Empreendimento:</b> ", emp, "<br>
+        <b>Empreendedor/CNPJ:</b> ", empreend, "<br>
+        <b>Atividade Prevista:</b> ", ativ, "<br>
+        <b>Localização:</b> ", mun, "<br>
+        <b>Registro (CAR/Matrícula):</b> ", car, "</p>
+        <p><b>2. CONTEXTUALIZAÇÃO METODOLÓGICA</b><br>
+        O presente laudo técnico trata da análise de viabilidade locacional preliminar. A triagem foi realizada através do cruzamento georreferenciado da Área Diretamente Afetada (ADA) do projeto com a base de dados espaciais do Estado de Minas Gerais (IDE-SISEMA).</p>
+        <p><b>3. RESULTADOS DA TRIAGEM ESPACIAL</b><br>", texto_conflitos, "</p>
+        <p><b>4. BASE LEGAL APLICÁVEL</b><br>
+        Os dados listados neste relatório fundamentam-se nas diretrizes de restrição da <b>Deliberação Normativa COPAM n.º 217/2017</b>.</p>
+        <br>
+        <p style='text-align: center;'><b>", rt, "</b><br>
+        <span style='font-size: 0.9em; color: gray;'>Documento gerado automaticamente pelo Sistema de Gestão Ambiental G5S</span></p>
+      </div>
+    "))
+    
+    texto_minuta(minuta)
+    laudo_pronto(TRUE)
+    showNotification("Minuta do laudo atualizada!", type = "message")
+  })
+  
+  # --- EXPORT CANVAS HTML CONVERTED TO PDF VIA DIALOG PRINTING ---
+  output$baixar_pdf_laudo <- downloadHandler(
+    filename = function() { paste0("Laudo_Preliminar_G5S_", Sys.Date(), ".html") },
+    content = function(file) {
+      req(laudo_raw_markdown())
+      temp_report <- file.path(tempdir(), "laudo_g5s.Rmd")
+      writeLines(laudo_raw_markdown(), temp_report)
+      rmarkdown::render(temp_report, output_file = file, quiet = TRUE)
+    }
+  )
+  
+  # --- VETORIAL EXPORT DOWNLOADER ---
+  output$baixar_conflitos_shp <- downloadHandler(
+    filename = function() { paste0("Camadas_Conflito_G5S_", Sys.Date(), ".zip") },
+    content = function(file) {
+      geos <- conflitos_geo()
+      if(length(geos) == 0) { showNotification("Nenhum conflito para exportação.", type = "warning"); return(NULL) }
+      temp_dir <- file.path(tempdir(), paste0("export_", as.numeric(Sys.time()))); dir.create(temp_dir, showWarnings = FALSE)
+      for(n in names(geos)) { sf::st_write(geos[[n]], dsn = temp_dir, layer = make.names(n), driver = "ESRI Shapefile", delete_layer = TRUE, quiet = TRUE) }
+      owd <- setwd(temp_dir); on.exit(setwd(owd))
+      utils::zip(zipfile = file, files = list.files(".", pattern = "\\.(shp|shx|dbf|prj|cpg)$"))
+    }
+  )
+  
+  # --- TRADUZIDO E SEM PAGINAÇÃO ---
+  output$tabela_relatorio <- renderDT({ 
+    datatable(resultados_relatorio(), 
+              rownames = FALSE,
+              options = list(
+                paging = FALSE,
+                language = list(
+                  search = "Filtrar Resultados em Tela:",
+                  info = "Mostrando _TOTAL_ critérios avaliados.",
+                  infoEmpty = "Nenhum critério disponível",
+                  zeroRecords = "Nenhum registro encontrado."
+                )
+              ),
+              class = 'table table-hover table-striped table-bordered border-success') %>% 
+      formatStyle('Veredito', fontWeight = 'bold', 
+                  color = styleEqual(
+                    c("🚨 SOBREPOSIÇÃO", "✅ NADA CONSTA", "⚠️ FALHA WFS", "ℹ️ INFORMAÇÃO"), 
+                    c("#e74c3c", "#18bc9c", "#f39c12", "#3498db")
+                  )
+      ) 
+  })
+  
+  output$baixar_relatorio <- downloadHandler(filename = function(){paste0("Relatorio_WFS_G5S_", Sys.Date(), ".xlsx")}, content = function(f){writexl::write_xlsx(resultados_relatorio(), f)})
+  observeEvent(input$limpar_tudo, { session$reload() })
+}
+
+shinyApp(ui, server)
