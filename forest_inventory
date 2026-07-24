@@ -1,0 +1,1466 @@
+library(shiny)
+library(tidyverse)
+library(DT)
+library(leaflet)  
+library(plotly)   
+library(sf)       
+library(zip)      
+library(bslib)           
+library(shinycssloaders) 
+
+# ==========================================
+# FUNÇÃO DE CONVERSÃO DE COORDENADAS
+# ==========================================
+converter_coordenada <- function(coord) {
+  if(is.na(coord) || coord == "") return(NA_real_)
+  
+  coord_str <- as.character(coord)
+  coord_str <- str_replace_all(coord_str, ",", ".") 
+  
+  if (str_detect(coord_str, "^-?\\d+\\.?\\d*$")) {
+    return(as.numeric(coord_str))
+  }
+  
+  numeros <- as.numeric(unlist(str_extract_all(coord_str, "\\d+\\.?\\d*")))
+  
+  if (length(numeros) > 0) {
+    graus <- numeros[1]
+    minutos <- ifelse(length(numeros) >= 2, numeros[2], 0)
+    segundos <- ifelse(length(numeros) >= 3, numeros[3], 0)
+    
+    decimal <- graus + (minutos / 60) + (segundos / 3600)
+    
+    if (str_detect(str_to_upper(coord_str), "S|W|O") || str_detect(coord_str, "^-")) {
+      decimal <- decimal * -1
+    }
+    return(decimal)
+  }
+  return(NA_real_)
+}
+
+# ==========================================
+# 1. INTERFACE GRÁFICA (UI) E DESIGN CSS
+# ==========================================
+meu_tema <- bs_theme(
+  version = 5,
+  bootswatch = "zephyr", 
+  primary = "#001a33",
+  secondary = "#4da6ff",
+  success = "#31a354",
+  info = "#2c7fb8",
+  base_font = font_google("Inter"),
+  heading_font = font_google("Inter")
+)
+
+ui <- page_fluid(
+  theme = meu_tema,
+  
+  tags$head(
+    tags$style(HTML("
+      /* --- Estilos da Tela de Boas-Vindas --- */
+      .landing-bg {
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        background-image: linear-gradient(rgba(0, 26, 51, 0.75), rgba(0, 26, 51, 0.75)), url('https://images.unsplash.com/photo-1448375240586-882707db888b?ixlib=rb-1.2.1&auto=format&fit=crop&w=1920&q=80');
+        background-size: cover; background-position: center; background-attachment: fixed;
+        display: flex; align-items: center; justify-content: center; z-index: 9999;
+      }
+      .landing-card {
+        background-color: rgba(255, 255, 255, 0.98); padding: 50px; border-radius: 12px;
+        text-align: center; width: 90%; max-width: 800px; box-shadow: 0 15px 35px rgba(0,0,0,0.4);
+      }
+      .landing-card h1 { color: #001a33; font-weight: 800; margin-bottom: 15px; font-size: 32px; }
+      .landing-card h4 { color: #555; margin-bottom: 30px; line-height: 1.6; font-size: 16px; font-weight: 400; }
+      .btn-landing {
+        font-size: 16px; padding: 16px 24px; margin: 10px 0; border-radius: 8px;
+        font-weight: 600; transition: all 0.3s ease; width: 100%; max-width: 480px; display: inline-block;
+      }
+      .btn-censo { background-color: #2c7fb8; color: white; border: none; }
+      .btn-censo:hover { background-color: #1d5a85; transform: translateY(-2px); color: white; box-shadow: 0 4px 12px rgba(44,127,184,0.3);}
+      .btn-amostra { background-color: #31a354; color: white; border: none; }
+      .btn-amostra:hover { background-color: #227a3e; transform: translateY(-2px); color: white; box-shadow: 0 4px 12px rgba(49,163,84,0.3);}
+      .btn-estrat { background-color: #7570b3; color: white; border: none; }
+      .btn-estrat:hover { background-color: #524f8a; transform: translateY(-2px); color: white; box-shadow: 0 4px 12px rgba(117,112,179,0.3);}
+      
+      /* --- Header customizado do sistema --- */
+      .app-header {
+        background: linear-gradient(135deg, #001a33 0%, #003366 100%);
+        color: white; padding: 25px 30px; border-radius: 8px; margin-bottom: 20px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1); display: flex; align-items: center; justify-content: space-between;
+      }
+      .app-header h2 { margin: 0; font-weight: 800; font-size: 24px; letter-spacing: 0.5px; }
+      .app-header p { margin: 5px 0 0 0; font-size: 14px; opacity: 0.9; }
+      
+      body { padding-bottom: 70px; background-color: #f4f6f9; }
+      
+      .rodape-customizado {
+        position: fixed; left: 0; bottom: 0; width: 100%; background-color: #001a33; color: white;
+        text-align: center; padding: 12px; font-size: 13px; z-index: 1000; border-top: 4px solid #4da6ff;
+      }
+      .rodape-customizado a { color: #4da6ff; text-decoration: none; font-weight: 600; }
+      .rodape-customizado a:hover { color: white; }
+      
+      /* --- Ajuste Leaflet e Legendas --- */
+      .leaflet-tile { image-rendering: -webkit-optimize-contrast !important; image-rendering: crisp-edges !important; image-rendering: pixelated !important; }
+      .legend-box { font-size: 13px; color: #444; margin-top: 15px; padding: 15px; background-color: #f8f9fa; border-left: 4px solid #2c7fb8; border-radius: 4px; line-height: 1.5; }
+      .legend-box b { color: #001a33; }
+    "))
+  ),
+  
+  uiOutput("interface_dinamica"),
+  
+  tags$div(class = "rodape-customizado",
+           HTML("Desenvolvido para <b><a href='#' target='_blank'>G5S Projetos e Consultoria</a></b> | 
+           Por: <b>Heitor C. Lacerda</b> | 
+           <a href='#' target='_blank'>LinkedIn</a> | 
+           <a href='#' target='_blank'>Portfólio</a>")
+  )
+)
+
+# ==========================================
+# 2. MOTOR E LÓGICA (SERVER)
+# ==========================================
+server <- function(input, output, session) {
+  
+  rv <- reactiveValues(metodo = NULL)
+  
+  observeEvent(input$btn_censo, { rv$metodo <- "censo" })
+  observeEvent(input$btn_amostra, { rv$metodo <- "amostragem" })
+  observeEvent(input$btn_estratificada, { rv$metodo <- "estratificada" })
+  observeEvent(input$btn_voltar_inicio, { rv$metodo <- NULL }) 
+  
+  # --- RENDERIZAÇÃO DA INTERFACE PRINCIPAL ---
+  output$interface_dinamica <- renderUI({
+    
+    if (is.null(rv$metodo)) {
+      div(class = "landing-bg",
+          div(class = "landing-card",
+              icon("tree", class = "fa-3x", style = "color: #31a354; margin-bottom: 20px;"),
+              h1("Análise de Inventário Florestal"),
+              h4("Plataforma automatizada para cálculos fitossociológicos e volumétricos. Selecione a metodologia do seu projeto:"),
+              hr(style = "border-top: 1px solid #e0e0e0; margin-bottom: 25px;"),
+              
+              actionButton("btn_censo", " Censo (100% de cobertura)", class = "btn-landing btn-censo", icon = icon("list-ol")),
+              br(),
+              actionButton("btn_amostra", " Amostragem Simples por Parcelas", class = "btn-landing btn-amostra", icon = icon("th-large")),
+              br(),
+              actionButton("btn_estratificada", " Amostragem Estratificada (Inicial, Médio...)", class = "btn-landing btn-estrat", icon = icon("layer-group"))
+          )
+      )
+    } else {
+      subtitulo <- switch(rv$metodo,
+                          "censo" = "Modo: Censo de Árvores Isoladas (100%)",
+                          "amostragem" = "Modo: Amostragem Simples por Parcelas",
+                          "estratificada" = "Modo: Amostragem Estratificada por Estágios Sucessionais")
+      
+      div(
+        div(class = "app-header", 
+            div(h2("Inventário Florestal - G5S"), p(subtitulo)),
+            actionButton("btn_voltar_inicio", "Trocar Método", icon = icon("arrow-left"), class = "btn-light btn-sm", style="font-weight:bold; color: #001a33;")
+        ),
+        
+        layout_sidebar(
+          sidebar = sidebar(
+            width = 340,
+            bg = "#ffffff",
+            
+            fileInput("planilha_campo", "1. Importar Planilha (.csv):", accept = ".csv", buttonLabel = "Procurar...", placeholder = "Nenhum arquivo"),
+            
+            uiOutput("mapeamento_colunas"),
+            
+            hr(),
+            if(rv$metodo != "estratificada") {
+              tagList(
+                numericInput("area_ha", "Área Amostrada (ha):", value = 1.0, step = 0.1),
+                helpText("Tamanho da área onde o levantamento físico foi executado.")
+              )
+            },
+            uiOutput("din_areas_estratos_sidebar"),
+            
+            checkboxInput("is_testemunha", "Inventário Testemunha (Área Corretiva)?", value = FALSE),
+            conditionalPanel(
+              condition = "input.is_testemunha == true",
+              numericInput("area_corretiva_ha", "Área Total da Intervenção Corretiva (ha):", value = 1.17, step = 0.01),
+              helpText("A extrapolação será aplicada em colunas comparativas nas saídas.")
+            ),
+            
+            numericInput("fator_emp", "Fator de Empilhamento:", value = 1.5, step = 0.1),
+            
+            br(),
+            actionButton("processar", "Processar Cálculos", class = "btn-success btn-lg", style = "width: 100%; font-weight: bold; box-shadow: 0 4px 6px rgba(49,163,84,0.3);", icon = icon("calculator")),
+            br(),
+            actionButton("btn_metodologia", "Metodologia e Fórmulas", icon = icon("book"), class = "btn-outline-secondary", style = "width: 100%; margin-top: 10px;")
+          ),
+          
+          # TÍTULO DESTACADO FORA DAS ABAS
+          h3("Resultados Analíticos", style = "color: #001a33; font-weight: 800; margin-top: 0px; margin-bottom: 20px;"),
+          
+          # Área Principal
+          navset_card_underline(
+            id = "main_tabs",
+            
+            nav_panel("Tabela Original", icon = icon("table"),
+                      card(card_body(DTOutput("tabela_bruta") %>% withSpinner(color="#001a33")))),
+            
+            nav_panel("Fitossociologia", icon = icon("leaf"),
+                      card(
+                        card_body(
+                          DTOutput("tab_fitossociologia") %>% withSpinner(color="#001a33"),
+                          HTML("<div class='legend-box'>
+                                 <b>Legenda de Siglas:</b><br>
+                                 <b>AB:</b> Área Basal Total (m²) | <b>VT:</b> Volume Total (m³) | <b>DA:</b> Densidade Absoluta (ind/ha) | <b>DoA:</b> Dominância Absoluta (m²/ha)<br>
+                                 <b>DR:</b> Densidade Relativa (%) | <b>DoR:</b> Dominância Relativa (%) | <b>FA:</b> Frequência Absoluta (%) | <b>FR:</b> Frequência Relativa (%)<br>
+                                 <b>IVI:</b> Índice de Valor de Importância (%) | <b>PSR:</b> Posição Sociológica Relativa (%) | <b>IVIAmp / VC:</b> IVI Ampliado / Valor de Cobertura (%)
+                               </div>"),
+                          downloadButton("dl_fito", "Exportar CSV", class = "btn-primary", icon = icon("download"))
+                        )
+                      )),
+            
+            nav_panel("Estrutura Vertical", icon = icon("align-left"),
+                      card(
+                        card_header("Posição Sociológica e Estratos"),
+                        card_body(
+                          DTOutput("tab_vertical") %>% withSpinner(color="#001a33"),
+                          HTML("<div class='legend-box'>
+                                 <b>Legenda de Siglas:</b><br>
+                                 <b>E1, E2, E3 (n):</b> Indivíduos nos estratos Inferior, Médio e Superior | <b>DAE 1, 2, 3:</b> Densidade Absoluta por Estrato (ind/ha)<br>
+                                 <b>PSA Total:</b> Posição Sociológica Absoluta | <b>PSR (%):</b> Posição Sociológica Relativa (%)
+                               </div>"),
+                          downloadButton("dl_vertical", "Exportar CSV", class = "btn-primary", icon = icon("download"))
+                        )
+                      )),
+            
+            nav_panel("Famílias Botânicas", icon = icon("project-diagram"),
+                      card(card_body(DTOutput("tab_familia") %>% withSpinner(color="#001a33"), br(), downloadButton("dl_familia", "Exportar CSV", class = "btn-primary", icon = icon("download"))))),
+            
+            nav_panel("Rendimento Total", icon = icon("cubes"),
+                      card(
+                        card_header("Rendimento Volumétrico e Estéreo por Classe Diamétrica"),
+                        card_body(DTOutput("tab_rendimento") %>% withSpinner(color="#001a33"), br(), downloadButton("dl_rendimento", "Exportar CSV", class = "btn-primary", icon = icon("download")))
+                      )),
+            
+            nav_panel("Estrutura Diamétrica", icon = icon("chart-bar"),
+                      card(
+                        card_header("Distribuição: Número de Indivíduos e Fustes (J-invertido)"),
+                        card_body(DTOutput("tab_dist_diametrica") %>% withSpinner(color="#001a33"), br(), downloadButton("dl_dist", "Exportar CSV (Distribuição)", class = "btn-primary", icon = icon("download")))
+                      ),
+                      card(
+                        card_header("Rendimento Lenhoso (m³) Exclusivo por Espécie e Classe"),
+                        card_body(DTOutput("tab_rendimento_sp_dap") %>% withSpinner(color="#001a33"), br(), downloadButton("dl_rendimento_sp_dap", "Exportar CSV (Volume)", class = "btn-primary", icon = icon("download")))
+                      )),
+            
+            nav_panel("Análises Ecológicas", icon = icon("dove"),
+                      layout_columns(
+                        col_widths = c(12, 12, 12),
+                        card(card_header("Índices de Diversidade Ecológica"), card_body(DTOutput("tab_diversidade") %>% withSpinner(color="#001a33"), br(), downloadButton("dl_diversidade", "Exportar CSV", class = "btn-primary", icon = icon("download")))),
+                        card(card_header("Sucessão e Dispersão"), card_body(DTOutput("tab_ecologico") %>% withSpinner(color="#001a33"), br(), downloadButton("dl_eco_sucessao", "Exportar CSV", class = "btn-primary", icon = icon("download")))),
+                        card(card_header("Espécies Imunes ou Ameaçadas"), card_body(DTOutput("tab_protegidas") %>% withSpinner(color="#001a33"), br(), downloadButton("dl_eco_protegidas", "Exportar CSV", class = "btn-primary", icon = icon("download"))))
+                      )),
+            
+            nav_panel("Dashboards", icon = icon("chart-pie"),
+                      layout_columns(
+                        col_widths = c(6, 6),
+                        card(full_screen = TRUE, card_header("Top 10 Espécies (Volume m³)"), card_body(plotlyOutput("grafico_especies") %>% withSpinner(color="#001a33"))),
+                        card(full_screen = TRUE, card_header("Comparativo: Indivíduos vs Fustes por Classe"), card_body(plotlyOutput("grafico_fustes_dap") %>% withSpinner(color="#001a33")))
+                      ),
+                      layout_columns(
+                        col_widths = c(6, 6),
+                        card(full_screen = TRUE, card_header("Proporção por Grupo Ecológico"), card_body(plotlyOutput("grafico_eco") %>% withSpinner(color="#001a33"))),
+                        card(full_screen = TRUE, card_header("Relação Hipsométrica (DAP x Altura)"), card_body(plotlyOutput("grafico_hipso") %>% withSpinner(color="#001a33")))
+                      ),
+                      uiOutput("ui_graficos_estratos"),
+                      uiOutput("ui_graficos_extras")
+            ),
+            
+            nav_panel("Mapa Interativo", icon = icon("map-marked-alt"),
+                      card(
+                        full_screen = TRUE,
+                        card_header("Distribuição Espacial Georreferenciada"),
+                        card_body(
+                          leafletOutput("mapa_arvores", height = "600px") %>% withSpinner(color="#001a33"), 
+                          br(),
+                          div(
+                            downloadButton("dl_shapefile", "Baixar Shapefile (.zip)", class = "btn-primary", icon = icon("map-marker-alt")),
+                            HTML("&nbsp; &nbsp;"),
+                            downloadButton("dl_kml", "Baixar KML (Google Earth)", class = "btn-success", icon = icon("globe"))
+                          )
+                        )
+                      )),
+            
+            nav_panel("Resumo Geral", icon = icon("clipboard-list"),
+                      card(
+                        card_header("Sumário Executivo e Estatística"),
+                        card_body(DTOutput("tab_resumo_geral") %>% withSpinner(color="#001a33"), br(), downloadButton("dl_resumo", "Exportar CSV", class = "btn-primary", icon = icon("download")))
+                      ))
+          )
+        )
+      )
+    }
+  })
+  
+  # --- DINÂMICO: MAPEMENTO DE COLUNAS EM UM ACCORDION (BSLIB) ---
+  output$mapeamento_colunas <- renderUI({
+    req(dados_brutos())
+    colunas <- c("Selecione...", colnames(dados_brutos())) 
+    
+    inputs_iniciais <- tagList()
+    if (rv$metodo %in% c("amostragem", "estratificada")) {
+      inputs_iniciais <- tagList(
+        selectInput("col_parcela", "Nº da Parcela (Obrigatório):", choices = colunas),
+        helpText("Unidade de amostragem de grandes fragmentos para intervenção. Espera-se valor numérico ou texto."),
+        numericInput("area_parcela_m2", "Área de 1 Parcela (m²):", value = 400, step = 10),
+        helpText("Tamanho individual de cada parcela em metros quadrados.")
+      )
+    }
+    if (rv$metodo == "estratificada") {
+      inputs_iniciais <- tagList(
+        inputs_iniciais, 
+        selectInput("col_estrato", "Coluna de Estrato / Estágio:", choices = colunas),
+        helpText("Coluna que classifica o estágio sucessional (ex: Inicial, Médio, Avançado).")
+      )
+    }
+    
+    accordion(
+      open = "mapeamento",
+      accordion_panel(
+        title = "2. Mapeamento de Colunas",
+        value = "mapeamento",
+        icon = icon("cogs"),
+        
+        inputs_iniciais,
+        
+        selectInput("col_arvore", "Nº da Árvore:", choices = colunas),
+        helpText("Identificador único do indivíduo. Espera-se número inteiro ou texto."),
+        
+        selectInput("col_fuste", "Fuste:", choices = colunas),
+        helpText("Ramificação do tronco na altura do peito."),
+        
+        selectInput("col_especie", "Nome Científico:", choices = colunas),
+        helpText("Identidade botânica. Espera-se texto (ex: 'Apuleia leiocarpa')."),
+        
+        selectInput("col_nome_pop", "Nome Popular (Opcional):", choices = colunas),
+        helpText("Nome regional. Dica: O termo 'Morta' neste campo isola a árvore apenas para cálculo de volume."),
+        
+        selectInput("col_familia", "Família (Opcional):", choices = colunas),
+        helpText("Classificação taxonômica."),
+        
+        selectInput("col_cap", "CAP em cm:", choices = colunas),
+        helpText("Circunferência à Altura do Peito (1,30m) em centímetros."),
+        
+        selectInput("col_ht", "Altura Total em m:", choices = colunas),
+        helpText("Altura desde o solo até o topo da copa."),
+        
+        selectInput("col_lat", "Latitude (Y):", choices = colunas),
+        helpText("Eixo Y (Graus Decimais ou GMS)."),
+        
+        selectInput("col_lon", "Longitude (X):", choices = colunas),
+        helpText("Eixo X (Graus Decimais ou GMS)."),
+        
+        selectInput("col_habito", "Hábito (Opcional):", choices = colunas),
+        helpText("Classificação de forma de vida."),
+        
+        selectInput("col_grupo_eco", "Grupo Ecológico (Opcional):", choices = colunas),
+        helpText("Classificação sucessional (ex: 'Pioneira', 'Clímax')."),
+        
+        selectInput("col_dispersao", "Dispersão (Opcional):", choices = colunas),
+        helpText("Síndrome de dispersão de sementes."),
+        
+        selectInput("col_vulnerabilidade", "Grau de Vulnerabilidade (Opcional):", choices = colunas),
+        helpText("Status legal de proteção.")
+      )
+    )
+  })
+  
+  # --- DINÂMICO: INPUTS DE ÁREA POR ESTRATO NA SIDEBAR ---
+  output$din_areas_estratos_sidebar <- renderUI({
+    req(dados_brutos(), input$col_estrato)
+    if(rv$metodo != "estratificada" || is.null(input$col_estrato) || input$col_estrato == "Selecione...") return(NULL)
+    
+    col_est <- input$col_estrato
+    if(!col_est %in% colnames(dados_brutos())) return(NULL)
+    
+    estratos <- unique(dados_brutos()[[col_est]])
+    estratos <- estratos[!is.na(estratos)]
+    
+    tagList(
+      hr(style="border-color: #4da6ff;"),
+      h6("Área Amostrada (ha) por Estrato:"),
+      lapply(estratos, function(est) {
+        numericInput(paste0("area_estrato_", est), paste("Estrato:", est), value = 1.0, step = 0.1)
+      })
+    )
+  })
+  
+  # --- JANELA MODAL DE METODOLOGIA COMPLETA ---
+  observeEvent(input$btn_metodologia, {
+    showModal(modalDialog(
+      title = "Manual Metodológico e Descrição de Parâmetros",
+      size = "l", easyClose = TRUE, footer = modalButton("Fechar Janela"),
+      withMathJax(HTML("
+        <div style='padding: 15px; max-height: 75vh; overflow-y: auto;'>
+          <h3 style='color: #001a33; border-bottom: 2px solid #4da6ff; padding-bottom: 5px;'>Metodologia e Fórmulas do Inventário</h3>
+          <p>Este documento detalha as fórmulas e os significados das colunas apresentadas nas abas de resultados do sistema, baseando-se na literatura clássica de fitossociologia e manejo florestal.</p>
+
+          <h4 style='color: #2c7fb8; margin-top: 20px;'>1. Cálculos Base e Parâmetros Individuais</h4>
+          <ul>
+            <li><b>DAP (cm):</b> Diâmetro à altura do peito (1,30m do solo). Fórmula: \\(DAP = \\frac{CAP}{\\pi}\\)</li>
+            <li><b>Área Basal (g em m²):</b> Área da seção transversal do tronco. Fórmula: \\(g = \\frac{\\pi \\times DAP^2}{40000}\\)</li>
+            <li><b>Volume unitário (V em m³):</b> Estimado pela equação volumétrica do Modelo CETEC. Fórmula: \\(V = e^{-9.504859 + 1.706244 \\cdot \\ln(DAP) + 1.168657 \\cdot \\ln(H_{total})}\\)</li>
+            <li><b>Estéreo (st):</b> Volume empilhado de madeira, considerando os vazios de ar. Fórmula: \\(st = V \\times Fator_{empilhamento}\\)</li>
+            <li><b>Fator de Extrapolação (Área Corretiva):</b> Utilizado quando o sistema processa um Inventário Testemunha. Fórmula: \\(Fator_{extra} = \\frac{\\text{Área Total da Intervenção (ha)}}{\\text{Área Fisicamente Amostrada (ha)}}\\)</li>
+          </ul>
+
+          <h4 style='color: #2c7fb8; margin-top: 20px;'>2. Aba: Fitossociologia (Horizontal)</h4>
+          <ul>
+            <li><b>N. de Indivíduos:</b> Contagem absoluta de árvores vivas identificadas (raízes independentes).</li>
+            <li><b>N. de Fustes:</b> Contagem absoluta de troncos mensurados (inclui ramificações de uma mesma árvore).</li>
+            <li><b>AB (m²):</b> Somatório da área basal de todos os fustes da espécie na amostra.</li>
+            <li><b>VT (m³):</b> Volume total acumulado da espécie.</li>
+            <li><b>DA (Densidade Absoluta):</b> Número de indivíduos projetado por hectare (ind/ha).</li>
+            <li><b>DR (Densidade Relativa):</b> Proporção do número de indivíduos da espécie em relação à abundância total da amostra (%).</li>
+            <li><b>DoA (Dominância Absoluta):</b> Área basal total ocupada pela espécie projetada por hectare (m²/ha).</li>
+            <li><b>DoR (Dominância Relativa):</b> Proporção da área basal da espécie em relação à área basal total da comunidade (%).</li>
+            <li><b>FA (Frequência Absoluta):</b> Porcentagem de parcelas amostrais em que a espécie foi registrada (%).</li>
+            <li><b>FR (Frequência Relativa):</b> Contribuição percentual da FA da espécie em relação ao somatório de todas as FAs (%).</li>
+            <li><b>IVI (%):</b> Índice de Valor de Importância. Representa o sucesso ecológico horizontal da espécie. \\(IVI = \\frac{DR + DoR + FR}{3}\\)</li>
+            <li><b>VC (%):</b> Valor de Cobertura. Utilizado em levantamentos censitários (sem parcelas). \\(VC = \\frac{DR + DoR}{2}\\)</li>
+            <li><b>IVIAmp (%):</b> IVI Ampliado. Incorpora o sucesso da espécie na estrutura vertical (PSR). \\(IVIAmp = \\frac{DR + DoR + FR + PSR}{4}\\)</li>
+          </ul>
+
+          <h4 style='color: #2c7fb8; margin-top: 20px;'>3. Aba: Estrutura Vertical</h4>
+          <ul>
+            <li><b>E1, E2, E3 (n):</b> Número de indivíduos que atingiram os estratos Inferior (\\(\\le 5\\text{m}\\)), Médio (\\(> 5\\text{m}\\) e \\(\\le 12\\text{m}\\)) e Superior (\\(> 12\\text{m}\\)).</li>
+            <li><b>DAE 1, DAE 2, DAE 3:</b> Densidade Absoluta da espécie dentro de cada estrato específico.</li>
+            <li><b>PSA Total:</b> Posição Sociológica Absoluta. Valor que pondera a presença da espécie considerando o peso relativo (abundância total) de cada estrato na floresta.</li>
+            <li><b>PSR (%):</b> Posição Sociológica Relativa. Proporção da PSA da espécie em relação à soma das PSAs de todas as espécies.</li>
+          </ul>
+
+          <h4 style='color: #2c7fb8; margin-top: 20px;'>4. Abas: Rendimento e Estrutura Diamétrica</h4>
+          <ul>
+            <li><b>Classes Diamétricas:</b> Divisão dos indivíduos em intervalos de DAP (<15cm, 15-30cm, 30-45cm, >=45cm) para avaliação do recrutamento (J-invertido) e definição de multiprodutos da madeira (lenha, moirão, serraria).</li>
+            <li><b>Total Amostrado (m³):</b> Rendimento físico estritamente mensurado em campo na área do levantamento.</li>
+            <li><b>Total Extrapolado (m³):</b> Rendimento projetado para a área da autuação/intervenção, aplicando-se o Fator de Extrapolação (quando a opção de Área Corretiva está habilitada).</li>
+          </ul>
+
+          <h4 style='color: #2c7fb8; margin-top: 20px;'>5. Aba: Análises Ecológicas (Diversidade)</h4>
+          <ul>
+            <li><b>Riqueza (S):</b> Contagem direta do número de espécies distintas identificadas.</li>
+            <li><b>Índice de Shannon-Weaver (H'):</b> Avalia a diversidade alfa ponderando a riqueza e a equitabilidade. Valores maiores indicam maior diversidade. \\(H' = -\\sum (p_i \\cdot \\ln(p_i))\\)</li>
+            <li><b>Índice de Simpson (C):</b> Medida de dominância ecológica. Expressa a probabilidade de que dois indivíduos retirados ao acaso pertençam à mesma espécie. Apresentado na tabela pelo seu complemento (1 - C), onde valores próximos de 1 indicam alta diversidade e baixa dominância de uma única espécie.</li>
+            <li><b>Equitabilidade de Pielou (J):</b> Varia de 0 a 1. Avalia quão uniforme é a distribuição do número de indivíduos entre as espécies encontradas. \\(J = \\frac{H'}{\\ln(S)}\\)</li>
+            <li><b>Quociente de Mistura de Jentsch (QM):</b> Intensidade de mistura das espécies (N/S). Representa, em média, quantos indivíduos precisam ser amostrados para se encontrar uma nova espécie.</li>
+          </ul>
+
+          <h4 style='color: #2c7fb8; margin-top: 20px;'>6. Aba: Resumo Geral (Estatística Florestal)</h4>
+          <ul>
+            <li>Em <b>Censos</b>: Apresenta contagens diretas e absolutas de fustes, indivíduos, volume (m³), estéreo (st) e proporção de árvores mortas.</li>
+            <li>Em <b>Amostragens Simples ou Estratificadas</b>, o sistema infere o comportamento da população e calcula parâmetros de precisão baseados em Péllico Netto & Brena (1997):
+              <ul>
+                <li><b>Variância (\(s^2\)) e Desvio Padrão (\(s\)):</b> Medidas de dispersão dos volumes entre as unidades amostrais.</li>
+                <li><b>Coeficiente de Variação (CV %):</b> Desvio padrão relativo à média, indicando a heterogeneidade da floresta.</li>
+                <li><b>Erro Padrão da Média:</b> Incerteza associada à média amostral, considerando a fração de amostragem (correção para populações finitas).</li>
+                <li><b>Valor de t:</b> Extraído da distribuição t de Student (bicaudal) para o grau de liberdade amostral, geralmente com \(\\alpha = 10\\%\) (90% de confiança para licenciamentos).</li>
+                <li><b>Erro de Amostragem (Absoluto e Relativo):</b> Limite da imprecisão do inventário. Se o erro relativo for maior que o admissível (geralmente 10%), o sistema indica a necessidade de lançar parcelas adicionais.</li>
+                <li><b>Intervalos de Confiança (IC):</b> Faixa de valores dentro da qual a verdadeira média populacional ou volume total tem determinada probabilidade (ex: 90%) de se encontrar.</li>
+                <li><b>EMC (Estimativa Mínima Confiável):</b> O limite inferior estrito do Intervalo de Confiança do volume populacional (\(Volume Estimado - Erro Absoluto Total\)). Muito utilizado em planos de manejo para garantir a sustentabilidade da exploração.</li>
+              </ul>
+            </li>
+          </ul>
+        </div>
+      "))
+    ))
+  })
+  
+  # --- MOTOR DE DADOS ---
+  dados_brutos <- reactive({
+    req(input$planilha_campo)
+    read_csv2(input$planilha_campo$datapath, locale = locale(encoding = "UTF-8"))
+  })
+  
+  output$tabela_bruta <- renderDT({
+    req(dados_brutos())
+    datatable(dados_brutos(), class = 'cell-border stripe hover', rownames = FALSE, options = list(pageLength = 5, scrollX = TRUE))
+  })
+  
+  resultados <- eventReactive(input$processar, {
+    req(dados_brutos())
+    df_padronizado <- dados_brutos()
+    
+    colunas_mapeadas <- list(
+      n_arvore = input$col_arvore, fuste = input$col_fuste, 
+      nome_cientifico = input$col_especie, nome_popular = input$col_nome_pop, 
+      familia = input$col_familia, cap_cm = input$col_cap, ht_m = input$col_ht, 
+      coord_y = input$col_lat, coord_x = input$col_lon, habito = input$col_habito,
+      grupo_ecologico = input$col_grupo_eco, dispersao = input$col_dispersao, grau_de_vulnerabilidade = input$col_vulnerabilidade
+    )
+    
+    if(rv$metodo %in% c("amostragem", "estratificada")) colunas_mapeadas$parcela <- input$col_parcela
+    if(rv$metodo == "estratificada") colunas_mapeadas$estrato <- input$col_estrato
+    
+    for (novo_nome in names(colunas_mapeadas)) {
+      col_original <- colunas_mapeadas[[novo_nome]]
+      if (!is.null(col_original) && col_original != "Selecione..." && col_original %in% colnames(df_padronizado)) {
+        df_padronizado[[novo_nome]] <- df_padronizado[[col_original]]
+      } else {
+        df_padronizado[[novo_nome]] <- NA
+      }
+    }
+    
+    # --- HIGIENIZAÇÃO DE TEXTO E CONVERSÃO DE DADOS ---
+    df_padronizado <- df_padronizado %>%
+      mutate(
+        nome_cientifico = str_trim(as.character(nome_cientifico)),
+        nome_popular = str_trim(as.character(nome_popular)),
+        familia = str_trim(as.character(familia)),
+        cap_cm = as.numeric(str_replace_all(as.character(cap_cm), ",", ".")),
+        ht_m = as.numeric(str_replace_all(as.character(ht_m), ",", "."))
+      ) %>%
+      rowwise() %>%
+      mutate(
+        coord_x = converter_coordenada(coord_x),
+        coord_y = converter_coordenada(coord_y)
+      ) %>%
+      ungroup() %>%
+      mutate(
+        is_morta = str_detect(str_to_lower(as.character(nome_cientifico)), "mort[oa]") | 
+          str_detect(str_to_lower(as.character(nome_popular)), "mort[oa]")
+      ) %>%
+      mutate(is_morta = ifelse(is.na(is_morta), FALSE, is_morta)) %>%
+      mutate(
+        id_arvore_unica = if(rv$metodo %in% c("amostragem", "estratificada") && "parcela" %in% names(.) && !all(is.na(parcela))) {
+          paste(parcela, n_arvore, sep = "_")
+        } else {
+          as.character(n_arvore)
+        }
+      )
+    
+    if(rv$metodo != "estratificada") {
+      df_padronizado$estrato <- "Área Única"
+    }
+    
+    if(any(abs(df_padronizado$coord_x) > 180, na.rm = TRUE) || any(abs(df_padronizado$coord_y) > 90, na.rm = TRUE)) {
+      showNotification(
+        "⚠️ Coordenadas UTM detectadas! O mapa interativo requer graus decimais (Lat/Lon). Os indivíduos com UTM foram processados nos cálculos, mas não aparecerão no mapa.", 
+        type = "warning", 
+        duration = 15
+      )
+    }
+    
+    # --- ÁREAS E PESOS PARA CÁLCULOS E EXTRAPOLAÇÕES ---
+    area_1_parc_ha <- ifelse(is.null(input$area_parcela_m2), 400, input$area_parcela_m2) / 10000
+    
+    if (rv$metodo == "estratificada") {
+      estratos_unicos <- unique(df_padronizado$estrato)
+      estratos_unicos <- estratos_unicos[!is.na(estratos_unicos)]
+      areas_estratos <- sapply(estratos_unicos, function(est) {
+        val <- input[[paste0("area_estrato_", est)]]
+        ifelse(is.null(val), 1.0, val)
+      })
+      area_proj <- sum(areas_estratos)
+    } else {
+      area_proj <- input$area_ha
+    }
+    
+    area_amostrada <- area_proj
+    if (rv$metodo %in% c("amostragem", "estratificada") && "parcela" %in% names(df_padronizado) && !all(is.na(df_padronizado$parcela))) {
+      n_parc <- n_distinct(df_padronizado$parcela, na.rm = TRUE)
+      area_amostrada <- n_parc * area_1_parc_ha
+    }
+    
+    # --- FATOR DE EXTRAPOLAÇÃO CONDICIONAL ---
+    is_test_flag <- !is.null(input$is_testemunha) && input$is_testemunha
+    fator_extrapolacao <- if(is_test_flag) {
+      req(input$area_corretiva_ha)
+      input$area_corretiva_ha / area_amostrada
+    } else {
+      1
+    }
+    
+    area_referencia <- if(is_test_flag) input$area_corretiva_ha else area_amostrada
+    fator_emp <- input$fator_emp
+    
+    dados_calc <- df_padronizado %>%
+      mutate(
+        dap_calculado_cm = cap_cm / pi,
+        area_basal_m2 = (pi * (dap_calculado_cm^2)) / 40000,
+        volume_m3 = exp(-9.504859 + 1.706244 * log(dap_calculado_cm) + 1.168657 * log(ht_m)),
+        estereo_st = volume_m3 * fator_emp,
+        estrato_alt = case_when(ht_m <= 5 ~ "E1", ht_m > 5 & ht_m <= 12 ~ "E2", ht_m > 12 ~ "E3", TRUE ~ NA_character_)
+      )
+    
+    # === RESUMO BASE E DIVERSIDADE ECOLÓGICA ===
+    resumo_base <- dados_calc %>%
+      group_by(nome_cientifico, is_morta, estrato) %>%
+      summarise(
+        nome_popular = ifelse(all(is.na(nome_popular)), NA_character_, first(na.omit(nome_popular))),
+        familia = ifelse(all(is.na(familia)), NA_character_, first(na.omit(familia))),
+        n_fustes = n(),
+        n_individuos = n_distinct(id_arvore_unica, na.rm = TRUE), 
+        area_basal_total = sum(area_basal_m2, na.rm = TRUE),
+        volume_total_m3 = sum(volume_m3, na.rm = TRUE),
+        estereo_total_st = sum(estereo_st, na.rm = TRUE),
+        ni_E1 = sum(estrato_alt == "E1", na.rm = TRUE),
+        ni_E2 = sum(estrato_alt == "E2", na.rm = TRUE),
+        ni_E3 = sum(estrato_alt == "E3", na.rm = TRUE),
+        .groups = "drop"
+      )
+    
+    resumo_vivas <- resumo_base %>% filter(is_morta == FALSE)
+    
+    # --- DIVERSIDADE POR PARCELA ---
+    if (rv$metodo %in% c("amostragem", "estratificada") && "parcela" %in% names(dados_calc) && !all(is.na(dados_calc$parcela))) {
+      div_parcela <- dados_calc %>%
+        filter(is_morta == FALSE) %>%
+        group_by(parcela, estrato, nome_cientifico) %>%
+        summarise(n_i = n_distinct(id_arvore_unica, na.rm = TRUE), .groups = "drop_last") %>%
+        mutate(N_p = sum(n_i),
+               S_p = n_distinct(nome_cientifico),
+               pi = n_i / N_p,
+               ln_pi = log(pi),
+               pi_ln_pi = pi * ln_pi,
+               ni_ni_1 = n_i * (n_i - 1)) %>%
+        group_by(parcela, estrato) %>%
+        summarise(
+          `Riqueza (S)` = first(S_p),
+          `Shannon-Weaver (H')` = -sum(pi_ln_pi, na.rm = TRUE),
+          `Simpson (C)` = ifelse(first(N_p) <= 1, 0, 1 - (sum(ni_ni_1, na.rm = TRUE) / (first(N_p) * (first(N_p) - 1)))),
+          `Pielou (J)` = ifelse(first(S_p) <= 1, 0, -sum(pi_ln_pi, na.rm = TRUE) / log(first(S_p))),
+          `Jentshc (QM)` = first(N_p) / first(S_p),
+          .groups = "drop"
+        )
+      
+      N_tot <- sum(resumo_vivas$n_individuos)
+      S_tot <- n_distinct(resumo_vivas$nome_cientifico)
+      
+      div_global <- resumo_vivas %>%
+        mutate(pi = n_individuos / N_tot, ln_pi = log(pi), pi_ln_pi = pi * ln_pi, ni_ni_1 = n_individuos * (n_individuos - 1)) %>%
+        summarise(
+          parcela = "GLOBAL (ÁREA TOTAL)",
+          estrato = "-",
+          `Riqueza (S)` = S_tot,
+          `Shannon-Weaver (H')` = -sum(pi_ln_pi, na.rm = TRUE),
+          `Simpson (C)` = ifelse(N_tot <= 1, 0, 1 - (sum(ni_ni_1, na.rm = TRUE) / (N_tot * (N_tot - 1)))),
+          `Pielou (J)` = ifelse(S_tot <= 1, 0, -sum(pi_ln_pi, na.rm = TRUE) / log(S_tot)),
+          `Jentshc (QM)` = N_tot / S_tot
+        )
+      
+      div_media <- div_parcela %>%
+        summarise(
+          parcela = "MÉDIA DAS PARCELAS",
+          estrato = "-",
+          `Riqueza (S)` = mean(`Riqueza (S)`, na.rm = TRUE),
+          `Shannon-Weaver (H')` = mean(`Shannon-Weaver (H')`, na.rm = TRUE),
+          `Simpson (C)` = mean(`Simpson (C)`, na.rm = TRUE),
+          `Pielou (J)` = mean(`Pielou (J)`, na.rm = TRUE),
+          `Jentshc (QM)` = mean(`Jentshc (QM)`, na.rm = TRUE)
+        )
+      
+      div_parcela <- div_parcela %>% mutate(parcela = as.character(parcela), estrato = as.character(estrato))
+      diversidade <- bind_rows(div_parcela, div_media, div_global) %>% rename(Parcela = parcela, Estrato = estrato)
+      
+    } else {
+      N_tot <- sum(resumo_vivas$n_individuos)
+      S_tot <- n_distinct(resumo_vivas$nome_cientifico)
+      
+      diversidade <- resumo_vivas %>%
+        mutate(pi = n_individuos / N_tot, ln_pi = log(pi), pi_ln_pi = pi * ln_pi, ni_ni_1 = n_individuos * (n_individuos - 1)) %>%
+        summarise(
+          Parcela = "Censo (Área Total)",
+          Estrato = "-",
+          `Riqueza (S)` = S_tot,
+          `Shannon-Weaver (H')` = -sum(pi_ln_pi, na.rm = TRUE),
+          `Simpson (C)` = ifelse(N_tot <= 1, 0, 1 - (sum(ni_ni_1, na.rm = TRUE) / (N_tot * (N_tot - 1)))),
+          `Pielou (J)` = ifelse(S_tot <= 1, 0, -sum(pi_ln_pi, na.rm = TRUE) / log(S_tot)),
+          `Jentshc (QM)` = N_tot / S_tot
+        )
+    }
+    
+    # === ESTRUTURA VERTICAL ===
+    est_vertical <- resumo_vivas %>% 
+      group_by(nome_cientifico) %>%
+      summarise(
+        familia = ifelse(all(is.na(familia)), NA_character_, first(na.omit(familia))),
+        nome_popular = ifelse(all(is.na(nome_popular)), NA_character_, first(na.omit(nome_popular))),
+        ni_E1 = sum(ni_E1), 
+        ni_E2 = sum(ni_E2), 
+        ni_E3 = sum(ni_E3), 
+        area_basal_total = sum(area_basal_total), 
+        .groups = "drop"
+      ) %>%
+      mutate(DAE1 = ni_E1 / area_amostrada, DAE2 = ni_E2 / area_amostrada, DAE3 = ni_E3 / area_amostrada)
+    
+    DTA <- sum(est_vertical$DAE1) + sum(est_vertical$DAE2) + sum(est_vertical$DAE3)
+    VF1 <- ifelse(DTA > 0, sum(est_vertical$DAE1) / DTA, 0)
+    VF2 <- ifelse(DTA > 0, sum(est_vertical$DAE2) / DTA, 0)
+    VF3 <- ifelse(DTA > 0, sum(est_vertical$DAE3) / DTA, 0)
+    
+    est_vertical <- est_vertical %>% mutate(PSA1 = DAE1 * VF1, PSA2 = DAE2 * VF2, PSA3 = DAE3 * VF3, PSA = PSA1 + PSA2 + PSA3)
+    est_vertical <- est_vertical %>% mutate(PSR = ifelse(sum(PSA, na.rm = TRUE) > 0, (PSA / sum(PSA, na.rm = TRUE)) * 100, 0))
+    
+    tabela_vertical <- est_vertical %>%
+      select(`Nome Científico` = nome_cientifico, `E1 (n)` = ni_E1, `E2 (n)` = ni_E2, `E3 (n)` = ni_E3, `DAE 1` = DAE1, `DAE 2` = DAE2, `DAE 3` = DAE3, `PSA Total` = PSA, `PSR (%)` = PSR) %>%
+      arrange(desc(`PSR (%)`))
+    
+    # === FITOSSOCIOLOGIA ===
+    resumo_fito_base <- resumo_vivas %>%
+      group_by(nome_cientifico) %>%
+      summarise(
+        nome_popular = ifelse(all(is.na(nome_popular)), NA_character_, first(na.omit(nome_popular))),
+        familia = ifelse(all(is.na(familia)), NA_character_, first(na.omit(familia))),
+        n_fustes = sum(n_fustes),
+        n_individuos = sum(n_individuos), 
+        area_basal_total = sum(area_basal_total),
+        volume_total_m3 = sum(volume_total_m3), 
+        estereo_total_st = sum(estereo_total_st), 
+        .groups = "drop"
+      )
+    
+    resumo_fito <- resumo_fito_base %>%
+      mutate(
+        dens_abs = n_individuos / area_amostrada, 
+        dom_abs = area_basal_total / area_amostrada,
+        volume_ha = volume_total_m3 / area_amostrada, 
+        estereo_ha = estereo_total_st / area_amostrada,
+        dens_rel = (n_individuos / sum(n_individuos, na.rm = TRUE)) * 100, 
+        dom_rel = (area_basal_total / sum(area_basal_total, na.rm = TRUE)) * 100
+      ) %>%
+      left_join(est_vertical %>% select(nome_cientifico, PSR), by = "nome_cientifico")
+    
+    if (rv$metodo %in% c("amostragem", "estratificada") && "parcela" %in% names(dados_calc) && !all(is.na(dados_calc$parcela))) {
+      n_parcelas_amostradas <- n_distinct(dados_calc$parcela, na.rm = TRUE)
+      
+      frequencia_df <- dados_calc %>%
+        filter(is_morta == FALSE) %>% 
+        group_by(nome_cientifico) %>%
+        summarise(n_parcelas_ocorrencia = n_distinct(parcela, na.rm = TRUE), .groups = "drop") %>%
+        mutate(FA = (n_parcelas_ocorrencia / n_parcelas_amostradas) * 100, FR = (FA / sum(FA, na.rm = TRUE)) * 100)
+      
+      resumo_censo <- resumo_fito %>%
+        left_join(frequencia_df, by = "nome_cientifico") %>%
+        mutate(IVI = (dens_rel + dom_rel + FR) / 3, IVIAmp = (dens_rel + dom_rel + FR + PSR) / 4) %>%
+        arrange(desc(IVI)) %>%
+        select(`Nome Científico` = nome_cientifico, `Nome Popular` = nome_popular, `Família` = familia, `N. de Indivíduos` = n_individuos, `N. de Fustes` = n_fustes, `AB` = area_basal_total, `VT(m³)` = volume_total_m3, `VT(m³/ha)` = volume_ha, `Estéreo (st)` = estereo_total_st, `DA` = dens_abs, `DoA` = dom_abs, `DR` = dens_rel, `DoR` = dom_rel, `FA (%)` = FA, `FR (%)` = FR, `IVI (%)` = IVI, `PSR (%)` = PSR, `IVIAmp (%)` = IVIAmp)
+    } else {
+      resumo_censo <- resumo_fito %>%
+        mutate(valor_cobertura = (dens_rel + dom_rel) / 2, ivi_amp = (dens_rel + dom_rel + PSR) / 3) %>%
+        arrange(desc(ivi_amp)) %>%
+        select(`Nome Científico` = nome_cientifico, `Nome Popular` = nome_popular, `Família` = familia, `N. de Indivíduos` = n_individuos, `N. de Fustes` = n_fustes, `AB` = area_basal_total, `VT(m³)` = volume_total_m3, `VT(m³/ha)` = volume_ha, `Estéreo (st)` = estereo_total_st, `DA` = dens_abs, `DoA` = dom_abs, `DR` = dens_rel, `DoR` = dom_rel, `VC (%)` = valor_cobertura, `PSR (%)` = PSR, `IVIAmp Adaptado (%)` = ivi_amp)
+    }
+    
+    # === RESUMO GERAL E ESTATÍSTICA ===
+    vol_parcelas_out <- NULL
+    
+    resumo_geral_base <- dados_calc %>%
+      summarise(
+        `Nº Fustes Amostrados (Total)` = n(), 
+        `Nº Fustes Amostrados (Vivos)` = sum(!is_morta, na.rm = TRUE),
+        `Nº Indivíduos Amostrados (Vivos)` = n_distinct(id_arvore_unica[!is_morta], na.rm = TRUE), 
+        `Nº Espécies Amostradas (Vivas)` = n_distinct(nome_cientifico[!is_morta], na.rm = TRUE),
+        `DAP Médio Quadrático (cm)` = round(sqrt(mean(dap_calculado_cm^2, na.rm = TRUE)), 2), 
+        `Altura Média (m)` = round(mean(ht_m, na.rm = TRUE), 2), 
+        `Volume Total Amostrado (m³)` = round(sum(volume_m3, na.rm = TRUE), 4),
+        `Estéreo Total Amostrado (st)` = round(sum(estereo_st, na.rm = TRUE), 4),
+        `Nº Fustes Amostrados (Mortos)` = sum(is_morta, na.rm = TRUE),
+        `Nº Árvores Mortas Amostradas` = n_distinct(id_arvore_unica[is_morta == TRUE], na.rm = TRUE),
+        `Volume de Árvores Mortas Amostrado (m³)` = round(sum(volume_m3[is_morta == TRUE], na.rm = TRUE), 4)
+      )
+    
+    if(is_test_flag) {
+      resumo_geral_base <- resumo_geral_base %>%
+        mutate(
+          `Nº Fustes Extrapolados (Vivos)` = ceiling(`Nº Fustes Amostrados (Vivos)` * fator_extrapolacao),
+          `Nº Indivíduos Extrapolados (Vivos)` = ceiling(`Nº Indivíduos Amostrados (Vivos)` * fator_extrapolacao),
+          `Volume Total Extrapolado (m³)` = round(`Volume Total Amostrado (m³)` * fator_extrapolacao, 4),
+          `Estéreo Total Extrapolado (st)` = round(`Estéreo Total Amostrado (st)` * fator_extrapolacao, 4)
+        ) %>%
+        relocate(`Nº Fustes Extrapolados (Vivos)`, .after = `Nº Fustes Amostrados (Vivos)`) %>%
+        relocate(`Nº Indivíduos Extrapolados (Vivos)`, .after = `Nº Indivíduos Amostrados (Vivos)`) %>%
+        relocate(`Volume Total Extrapolado (m³)`, .after = `Volume Total Amostrado (m³)`) %>%
+        relocate(`Estéreo Total Extrapolado (st)`, .after = `Estéreo Total Amostrado (st)`)
+    }
+    
+    if (rv$metodo == "estratificada") {
+      vol_p_estrato <- dados_calc %>% 
+        group_by(estrato, parcela) %>% 
+        summarise(vol_total = sum(volume_m3, na.rm = TRUE), .groups = "drop")
+      
+      vol_parcelas_out <- vol_p_estrato 
+      
+      estratos_encontrados <- unique(vol_p_estrato$estrato)
+      estratos_encontrados <- estratos_encontrados[!is.na(estratos_encontrados)]
+      tot_a_proj <- sum(sapply(estratos_encontrados, function(e) areas_estratos[e]))
+      tot_N <- tot_a_proj / area_1_parc_ha
+      
+      total_n_amostra <- nrow(vol_p_estrato)
+      df_pooled <- max(1, total_n_amostra - length(estratos_encontrados))
+      t_val <- qt(0.95, df = df_pooled)
+      
+      erro_admissivel_perc <- 10
+      
+      temp_stratum_metrics <- list()
+      sum_Ah_sh <- 0
+      sum_term2 <- 0
+      
+      for(est in estratos_encontrados) {
+        sub_p <- vol_p_estrato %>% filter(estrato == est)
+        n_h <- nrow(sub_p)
+        vol_medido_h <- sum(sub_p$vol_total)
+        mean_h <- ifelse(n_h > 0, mean(sub_p$vol_total), 0)
+        var_h <- ifelse(n_h > 1, var(sub_p$vol_total), 0)
+        sd_h <- sqrt(var_h)
+        A_h <- areas_estratos[est]
+        N_h <- A_h / area_1_parc_ha
+        
+        sum_Ah_sh <- sum_Ah_sh + (A_h * sd_h)
+        if(N_h > 0 && n_h > 0) {
+          sum_term2 <- sum_term2 + ((A_h^2 * var_h) / N_h)
+        }
+        
+        temp_stratum_metrics[[est]] <- list(n_h = n_h, vol_medido = vol_medido_h, mean_h = mean_h, var_h = var_h, sd_h = sd_h, A_h = A_h, N_h = N_h)
+      }
+      
+      mean_st_pre <- sum(sapply(estratos_encontrados, function(e) {
+        (temp_stratum_metrics[[e]]$A_h / tot_a_proj) * temp_stratum_metrics[[e]]$mean_h
+      }))
+      
+      D_val <- (erro_admissivel_perc / 100 * mean_st_pre) / t_val
+      n_opt_tot <- (sum_Ah_sh^2) / (tot_N * (D_val^2) + sum_term2)
+      
+      params_list <- c(
+        "Área total (ha)",
+        "Parcelas",
+        "n (número ótimo)",
+        "Volume medido (m³)",
+        "Média volumétrica (m³)",
+        "Variância",
+        "Desvio padrão",
+        "Variância da média estratificada",
+        "Erro padrão da média",
+        "Coeficiente de variação (%)",
+        "t Tabelado",
+        "Erro de amostragem absoluto (m³)",
+        "Erro de Amostragem (%)",
+        "IC para a média (90 %)",
+        "IC para a média por ha (90 %)",
+        "IC para a população (90 %)",
+        "Volume estimado (m³)",
+        "EMC (m³)"
+      )
+      
+      matrix_data <- tibble(Parâmetro = params_list)
+      
+      media_ponderada_st <- 0
+      var_st_acumulada <- 0
+      total_vol_medido_geral <- 0
+      
+      for(est in estratos_encontrados) {
+        m <- temp_stratum_metrics[[est]]
+        n_h <- m$n_h
+        A_h <- m$A_h
+        N_h <- m$N_h
+        W_h <- A_h / tot_a_proj
+        mean_h <- m$mean_h
+        var_h <- m$var_h
+        sd_h <- m$sd_h
+        vol_medido_h <- m$vol_medido
+        
+        total_vol_medido_geral <- total_vol_medido_geral + vol_medido_h
+        media_ponderada_st <- media_ponderada_st + (W_h * mean_h)
+        
+        fpc_h <- (1 - (n_h / N_h))
+        var_mean_h <- ifelse(n_h > 0, (var_h / n_h) * fpc_h, 0)
+        var_st_acumulada <- var_st_acumulada + ((W_h^2) * var_mean_h)
+        
+        se_h <- sqrt(var_mean_h)
+        cv_h <- ifelse(mean_h > 0, (sd_h / mean_h) * 100, 0)
+        E_a_h <- t_val * se_h
+        E_r_h <- ifelse(mean_h > 0, (E_a_h / mean_h) * 100, 0)
+        
+        ic_inf_m_h <- mean_h - E_a_h
+        ic_sup_m_h <- mean_h + E_a_h
+        ic_inf_ha_h <- ic_inf_m_h / area_1_parc_ha
+        ic_sup_ha_h <- ic_sup_m_h / area_1_parc_ha
+        
+        vol_est_h <- mean_h * N_h
+        E_a_tot_h <- E_a_h * N_h
+        ic_inf_pop_h <- vol_est_h - E_a_tot_h
+        ic_sup_pop_h <- vol_est_h + E_a_tot_h
+        emc_h <- vol_est_h - E_a_tot_h
+        
+        nh_opt <- ifelse(sum_Ah_sh > 0, n_opt_tot * ((A_h * sd_h) / sum_Ah_sh), n_h)
+        
+        col_vals <- c(
+          sprintf("%.2f", A_h),
+          sprintf("%d", n_h),
+          sprintf("%.2f (fat: %d)", nh_opt, ceiling(nh_opt)),
+          sprintf("%.4f", vol_medido_h),
+          sprintf("%.4f", mean_h),
+          sprintf("%.4f", var_h),
+          sprintf("%.4f", sd_h),
+          sprintf("%.6f", var_mean_h),
+          sprintf("%.4f", se_h),
+          sprintf("%.2f%%", cv_h),
+          sprintf("%.4f", t_val),
+          sprintf("%.4f", E_a_h),
+          sprintf("%.2f%%", E_r_h),
+          sprintf("[%.4f, %.4f]", ic_inf_m_h, ic_sup_m_h),
+          sprintf("[%.4f, %.4f]", ic_inf_ha_h, ic_sup_ha_h),
+          sprintf("[%.2f, %.2f]", ic_inf_pop_h, ic_sup_pop_h),
+          sprintf("%.2f", vol_est_h),
+          sprintf("%.2f", emc_h)
+        )
+        
+        matrix_data[[est]] <- col_vals
+      }
+      
+      se_st <- sqrt(var_st_acumulada)
+      E_a_st <- t_val * se_st
+      E_r_st <- ifelse(media_ponderada_st > 0, (E_a_st / media_ponderada_st) * 100, 0)
+      
+      ic_inf_m_st <- media_ponderada_st - E_a_st
+      ic_sup_m_st <- media_ponderada_st + E_a_st
+      ic_inf_ha_st <- ic_inf_m_st / area_1_parc_ha
+      ic_sup_ha_st <- ic_sup_m_st / area_1_parc_ha
+      
+      vol_est_st <- media_ponderada_st * tot_N
+      E_a_tot_st <- E_a_st * tot_N
+      ic_inf_pop_st <- vol_est_st - E_a_tot_st
+      ic_sup_pop_st <- vol_est_st + E_a_tot_st
+      emc_st <- vol_est_st - E_a_tot_st
+      
+      pooled_var <- sum(sapply(estratos_encontrados, function(e) {
+        (temp_stratum_metrics[[e]]$A_h / tot_a_proj) * temp_stratum_metrics[[e]]$var_h
+      }))
+      pooled_sd <- sqrt(pooled_var)
+      pooled_cv <- ifelse(media_ponderada_st > 0, (pooled_sd / media_ponderada_st) * 100, 0)
+      
+      general_vals <- c(
+        sprintf("%.2f", tot_a_proj),
+        sprintf("%d", total_n_amostra),
+        sprintf("%.2f (fat: %d)", n_opt_tot, ceiling(n_opt_tot)),
+        sprintf("%.4f", total_vol_medido_geral),
+        sprintf("%.4f", media_ponderada_st),
+        sprintf("%.4f", pooled_var),
+        sprintf("%.4f", pooled_sd),
+        sprintf("%.6f", var_st_acumulada),
+        sprintf("%.4f", se_st),
+        sprintf("%.2f%%", pooled_cv),
+        sprintf("%.4f", t_val),
+        sprintf("%.4f", E_a_st),
+        sprintf("%.2f%%", E_r_st),
+        sprintf("[%.4f, %.4f]", ic_inf_m_st, ic_sup_m_st),
+        sprintf("[%.4f, %.4f]", ic_inf_ha_st, ic_sup_ha_st),
+        sprintf("[%.2f, %.2f]", ic_inf_pop_st, ic_sup_pop_st),
+        sprintf("%.2f", vol_est_st),
+        sprintf("%.2f", emc_st)
+      )
+      
+      matrix_data[["GERAL / ESTRATIFICADO"]] <- general_vals
+      resumo_geral <- matrix_data
+      
+    } else {
+      resumo_geral <- resumo_geral_base %>%
+        mutate(
+          `Volume Estimado (m³/ha)` = round(sum(dados_calc$volume_m3, na.rm = TRUE) / area_amostrada, 4),    
+          `Estéreo Estimado (st/ha)` = round(sum(dados_calc$estereo_st, na.rm = TRUE) / area_amostrada, 4)   
+        ) %>% pivot_longer(cols = everything(), names_to = "Parâmetro", values_to = "Valor")
+      
+      if (rv$metodo == "amostragem" && "parcela" %in% names(dados_calc) && !all(is.na(dados_calc$parcela))) {
+        vol_parcelas <- dados_calc %>% group_by(parcela) %>% summarise(vol_total = sum(volume_m3, na.rm = TRUE), .groups = "drop")
+        vol_parcelas_out <- vol_parcelas 
+        
+        N_pop <- area_amostrada / area_1_parc_ha
+        n_amostra <- nrow(vol_parcelas)
+        
+        media_vol <- mean(vol_parcelas$vol_total)
+        var_vol <- var(vol_parcelas$vol_total)
+        sd_vol <- sd(vol_parcelas$vol_total)
+        cv_perc <- (sd_vol / media_vol) * 100
+        
+        var_media <- (var_vol / n_amostra) * (1 - (n_amostra / N_pop))
+        erro_padrao <- sqrt(var_media)
+        t_val <- qt(0.975, df = n_amostra - 1)
+        erro_absoluto <- t_val * erro_padrao
+        erro_relativo_perc <- (erro_absoluto / media_vol) * 100
+        
+        ic_inf <- media_vol - erro_absoluto; ic_sup <- media_vol + erro_absoluto
+        vol_total_est <- media_vol * N_pop
+        ic_total_inf <- ic_inf * N_pop; ic_total_sup <- ic_sup * N_pop
+        
+        erro_admissivel <- 10 
+        n_ideal <- ((t_val^2) * (cv_perc^2)) / ((erro_admissivel^2) + ((t_val^2) * (cv_perc^2)) / N_pop)
+        n_ideal <- ceiling(n_ideal) 
+        n_adicional <- max(0, n_ideal - n_amostra)
+        
+        status_precisao <- ifelse(erro_relativo_perc > erro_admissivel, 
+                                  paste("❌ ALERTA: Faltam", n_adicional, "parcelas"), 
+                                  "✅ Precisão Atingida (Suficiente)")
+        
+        estatisticas <- tibble(
+          Parâmetro = c("--- ESTATÍSTICA DE AMOSTRAGEM ---", 
+                        "Nº de Parcelas Amostradas (n)", 
+                        "Total de Parcelas Possíveis (N)", 
+                        "Variância da Amostra", 
+                        "Desvio Padrão", 
+                        "Coeficiente de Variação (%)", 
+                        "Erro Padrão da Média", 
+                        "Valor de t (95%)", 
+                        "Erro Amostral Relativo (%)", 
+                        "Volume Total Estimado Área (m³)", 
+                        "IC - Volume Mínimo Esperado (m³)", 
+                        "IC - Volume Máximo Esperado (m³)",
+                        "--- PLANEJAMENTO DE CAMPO (ERRO LEGAL 10%) ---",
+                        "Erro Máximo Admissível (%)",
+                        "Número Ideal de Parcelas (n)",
+                        "Parcelas Adicionais Necessárias",
+                        "Status do Inventário"),
+          Valor = as.character(c(NA, n_amostra, round(N_pop, 2), round(var_vol, 4), round(sd_vol, 4), 
+                                 round(cv_perc, 2), round(erro_padrao, 4), round(t_val, 4), round(erro_relativo_perc, 2), 
+                                 round(vol_total_est, 4), round(ic_total_inf, 4), round(ic_total_sup, 4),
+                                 NA, erro_admissivel, n_ideal, n_adicional, status_precisao))
+        )
+        resumo_geral <- resumo_geral %>% mutate(Valor = as.character(Valor))
+        resumo_geral <- bind_rows(resumo_geral, estatisticas)
+      }
+    }
+    
+    # === TABELAS AUXILIARES ===
+    resumo_familias <- dados_calc %>% 
+      filter(!is_morta & !is.na(familia) & familia != "") %>% 
+      group_by(familia) %>% 
+      summarise(`N. de Indivíduos` = n_distinct(id_arvore_unica, na.rm = TRUE), .groups = "drop") %>% 
+      mutate(`Porcentagem (%)` = round((`N. de Indivíduos` / sum(`N. de Indivíduos`, na.rm = TRUE)) * 100, 2)) %>% 
+      arrange(desc(`N. de Indivíduos`)) %>% 
+      rename(`Família` = familia)
+    
+    dados_arvore <- dados_calc %>% 
+      group_by(id_arvore_unica, n_arvore, nome_cientifico, habito, grupo_ecologico, dispersao, grau_de_vulnerabilidade, coord_x, coord_y, is_morta, estrato) %>% 
+      summarise(
+        nome_popular = ifelse(all(is.na(nome_popular)), NA_character_, first(na.omit(nome_popular))),
+        familia = ifelse(all(is.na(familia)), NA_character_, first(na.omit(familia))),
+        dap_equivalente_cm = sqrt(sum(dap_calculado_cm^2, na.rm = TRUE)), 
+        volume_total_m3 = sum(volume_m3, na.rm = TRUE), 
+        volume_extrapolado_m3 = if(is_test_flag) sum(volume_m3, na.rm = TRUE) * fator_extrapolacao else NA,
+        ht_media = mean(ht_m, na.rm = TRUE),
+        n_fustes_arvore = n(),
+        .groups = "drop"
+      ) %>% 
+      mutate(classe_dap = factor(case_when(dap_equivalente_cm < 15 ~ "DAP < 15 cm", dap_equivalente_cm >= 15 & dap_equivalente_cm < 30 ~ "DAP 15 |- 30 cm", dap_equivalente_cm >= 30 & dap_equivalente_cm < 45 ~ "DAP 30 |- 45 cm", dap_equivalente_cm >= 45 ~ "DAP >= 45 cm"), levels = c("DAP < 15 cm", "DAP 15 |- 30 cm", "DAP 30 |- 45 cm", "DAP >= 45 cm")))
+    
+    # --- RENDIMENTO COMPLETO COM NOME POPULAR, ESTÉREO E VOL/HA ---
+    rendimento <- dados_calc %>% 
+      mutate(classe_dap = factor(case_when(dap_calculado_cm < 15 ~ "DAP < 15 cm", dap_calculado_cm >= 15 & dap_calculado_cm < 30 ~ "DAP 15 |- 30 cm", dap_calculado_cm >= 30 & dap_calculado_cm < 45 ~ "DAP 30 |- 45 cm", dap_calculado_cm >= 45 ~ "DAP >= 45 cm"), levels = c("DAP < 15 cm", "DAP 15 |- 30 cm", "DAP 30 |- 45 cm", "DAP >= 45 cm"))) %>% 
+      group_by(nome_cientifico, classe_dap) %>% 
+      summarise(
+        nome_popular = ifelse(all(is.na(nome_popular)), NA_character_, first(na.omit(nome_popular))),
+        vol = sum(volume_m3, na.rm = TRUE), 
+        .groups = "drop"
+      ) %>% 
+      pivot_wider(names_from = classe_dap, values_from = vol, values_fill = 0, names_expand = TRUE) %>% 
+      rowwise() %>% 
+      mutate(`Total Amostrado (m³)` = sum(c_across(starts_with("DAP")), na.rm = TRUE)) %>% 
+      ungroup()
+    
+    if(is_test_flag) {
+      rendimento <- rendimento %>%
+        mutate(
+          `Total Extrapolado (m³)` = `Total Amostrado (m³)` * fator_extrapolacao,
+          `Estéreo Amostrado (st)` = `Total Amostrado (m³)` * fator_emp,
+          `Estéreo Extrapolado (st)` = `Total Extrapolado (m³)` * fator_emp,
+          `Volume (m³/ha)` = `Total Amostrado (m³)` / area_amostrada,
+          `Estéreo (st/ha)` = `Estéreo Amostrado (st)` / area_amostrada
+        ) %>%
+        arrange(desc(`Total Amostrado (m³)`))
+    } else {
+      rendimento <- rendimento %>%
+        rename(`Total (m³)` = `Total Amostrado (m³)`) %>%
+        mutate(
+          `Total (st)` = `Total (m³)` * fator_emp,
+          `Volume (m³/ha)` = `Total (m³)` / area_amostrada,
+          `Estéreo (st/ha)` = `Total (st)` / area_amostrada
+        ) %>%
+        arrange(desc(`Total (m³)`))
+    }
+    rendimento <- rendimento %>% rename(`Nome Científico` = nome_cientifico, `Nome Popular` = nome_popular)
+    
+    # --- RENDIMENTO LENHOSO (m³) EXCLUSIVO POR NOME CIENTÍFICO E CLASSE DIAMÉTRICA ---
+    rendimento_sp_dap <- dados_calc %>% 
+      mutate(classe_dap = factor(case_when(dap_calculado_cm < 15 ~ "DAP < 15 cm", 
+                                           dap_calculado_cm >= 15 & dap_calculado_cm < 30 ~ "DAP 15 |- 30 cm", 
+                                           dap_calculado_cm >= 30 & dap_calculado_cm < 45 ~ "DAP 30 |- 45 cm", 
+                                           dap_calculado_cm >= 45 ~ "DAP >= 45 cm"), 
+                                 levels = c("DAP < 15 cm", "DAP 15 |- 30 cm", "DAP 30 |- 45 cm", "DAP >= 45 cm"))) %>% 
+      group_by(nome_cientifico, classe_dap) %>% 
+      summarise(vol = sum(volume_m3, na.rm = TRUE), .groups = "drop") %>% 
+      pivot_wider(names_from = classe_dap, values_from = vol, values_fill = 0, names_expand = TRUE) %>% 
+      rowwise() %>% 
+      mutate(`Total Amostrado (m³)` = sum(c_across(starts_with("DAP")), na.rm = TRUE)) %>% 
+      ungroup() %>% 
+      arrange(nome_cientifico)
+    
+    if(is_test_flag) {
+      rendimento_sp_dap <- rendimento_sp_dap %>%
+        mutate(`Total Extrapolado (m³)` = `Total Amostrado (m³)` * fator_extrapolacao) %>%
+        select(`Nome Científico` = nome_cientifico, `DAP < 15 cm`, `DAP 15 |- 30 cm`, `DAP 30 |- 45 cm`, `DAP >= 45 cm`, `Total Amostrado (m³)`, `Total Extrapolado (m³)`)
+    } else {
+      rendimento_sp_dap <- rendimento_sp_dap %>%
+        rename(`Total (m³)` = `Total Amostrado (m³)`) %>%
+        select(`Nome Científico` = nome_cientifico, `DAP < 15 cm`, `DAP 15 |- 30 cm`, `DAP 30 |- 45 cm`, `DAP >= 45 cm`, `Total (m³)`)
+    }
+    
+    n_arvores_vivas <- nrow(dados_arvore %>% filter(!is_morta))
+    dist_diametrica <- dados_arvore %>% 
+      filter(!is_morta) %>% 
+      group_by(classe_dap) %>% 
+      summarise(
+        `Nº de Indivíduos Amostrados` = n(), 
+        `Nº de Fustes Amostrados` = sum(n_fustes_arvore),
+        `Porcentagem Indiv. (%)` = round((n() / n_arvores_vivas) * 100, 2), 
+        .groups = "drop"
+      ) %>% rename(`Classe Diamétrica` = classe_dap)
+    
+    ecologico <- dados_arvore %>% filter(!is_morta & !is.na(grupo_ecologico) & !is.na(dispersao)) %>% group_by(grupo_ecologico, dispersao) %>% summarise(`Nº Espécies` = n_distinct(nome_cientifico, na.rm = TRUE), `Nº Indivíduos` = n(), .groups = "drop") %>% mutate(`%` = round((`Nº Indivíduos` / sum(`Nº Indivíduos`, na.rm = TRUE)) * 100, 2)) %>% arrange(desc(`Nº Indivíduos`)) %>% rename(`Grupo Ecológico` = grupo_ecologico, `Dispersão` = dispersao)
+    
+    protegidas <- dados_arvore %>% filter(!is_morta & !is.na(grau_de_vulnerabilidade)) %>% 
+      group_by(nome_cientifico, grau_de_vulnerabilidade) %>% 
+      summarise(
+        nome_popular = ifelse(all(is.na(nome_popular)), NA_character_, first(na.omit(nome_popular))), 
+        `Nº Indiv. Amostrados` = n(),
+        `Volume Amostrado (m³)` = sum(volume_total_m3, na.rm = TRUE),
+        .groups = "drop"
+      )
+    
+    if(is_test_flag) {
+      protegidas <- protegidas %>%
+        mutate(
+          `Nº Indiv. Extrapolados` = ceiling(`Nº Indiv. Amostrados` * fator_extrapolacao),
+          `Volume Extrapolado (m³)` = `Volume Amostrado (m³)` * fator_extrapolacao
+        )
+    }
+    
+    protegidas <- protegidas %>% rename(`Nome Científico` = nome_cientifico, `Nome Popular` = nome_popular, `Grau de Vulnerabilidade` = grau_de_vulnerabilidade)
+    
+    return(list(
+      geral = resumo_geral, fitossociologia = resumo_censo, vertical = tabela_vertical, 
+      familias = resumo_familias, rendimento = rendimento, rendimento_sp_dap = rendimento_sp_dap, 
+      diversidade = diversidade, dist_diametrica = dist_diametrica, ecologico = ecologico, 
+      protegidas = protegidas, dados_arvore = dados_arvore, vol_parcelas = vol_parcelas_out
+    ))
+  })
+  
+  # --- SAÍDAS E RENDERIZAÇÕES ---
+  output$ui_graficos_extras <- renderUI({
+    req(resultados())
+    df <- resultados()$dados_arvore %>% filter(!is_morta) 
+    tem_habito <- any(!is.na(df$habito))
+    tem_dispersao <- any(!is.na(df$dispersao))
+    is_amostra <- !is.null(resultados()$vol_parcelas) 
+    
+    cols <- list()
+    
+    if(tem_habito) cols[[length(cols) + 1]] <- column(6, card(full_screen = TRUE, card_header("Proporção por Hábito"), card_body(plotlyOutput("grafico_habito") %>% withSpinner(color="#001a33"))))
+    if(tem_dispersao) cols[[length(cols) + 1]] <- column(6, card(full_screen = TRUE, card_header("Síndromes de Dispersão"), card_body(plotlyOutput("grafico_dispersao") %>% withSpinner(color="#001a33"))))
+    
+    if(is_amostra) {
+      cols[[length(cols) + 1]] <- column(6, card(full_screen = TRUE, card_header("Composição do IVI (Top 10 Espécies)"), card_body(plotlyOutput("grafico_ivi") %>% withSpinner(color="#001a33"))))
+      cols[[length(cols) + 1]] <- column(6, card(full_screen = TRUE, card_header("Volume Total por Parcela"), card_body(plotlyOutput("grafico_vol_parcela") %>% withSpinner(color="#001a33"))))
+    }
+    
+    if(length(cols) == 0) return(NULL)
+    tagList(hr(), do.call(fluidRow, cols))
+  })
+  
+  # --- GRÁFICOS DINÂMICOS PARA ESTRATOS NO DASHBOARD ---
+  output$ui_graficos_estratos <- renderUI({
+    req(resultados())
+    if(rv$metodo != "estratificada") return(NULL)
+    
+    tagList(
+      hr(),
+      fluidRow(
+        column(6, card(full_screen = TRUE, card_header("Volume Total Amostrado por Estrato (m³)"), card_body(plotlyOutput("grafico_vol_estrato") %>% withSpinner(color="#001a33")))),
+        column(6, card(full_screen = TRUE, card_header("Média Volumétrica por Parcela por Estrato (m³)"), card_body(plotlyOutput("grafico_media_estrato") %>% withSpinner(color="#001a33"))))
+      )
+    )
+  })
+  
+  output$grafico_vol_estrato <- renderPlotly({
+    req(resultados())
+    if(is.null(resultados()$vol_parcelas)) return(NULL)
+    
+    df_vol <- resultados()$vol_parcelas
+    df_resumo_est <- df_vol %>% group_by(estrato) %>% summarise(vol_medido = sum(vol_total), .groups = "drop")
+    
+    p <- ggplot(df_resumo_est, aes(x = estrato, y = vol_medido, fill = estrato)) +
+      geom_col(alpha = 0.9) +
+      theme_minimal() +
+      labs(x = "Estágio / Estrato", y = "Volume Total Amostrado (m³)") +
+      theme(legend.position = "none")
+    
+    ggplotly(p) %>% config(toImageButtonOptions = list(format = "png", width = 1200, height = 800, scale = 2, filename = "grafico_vol_estrato"))
+  })
+  
+  output$grafico_media_estrato <- renderPlotly({
+    req(resultados())
+    if(is.null(resultados()$vol_parcelas)) return(NULL)
+    
+    df_vol <- resultados()$vol_parcelas
+    df_resumo_est <- df_vol %>% group_by(estrato) %>% summarise(media_vol = mean(vol_total), .groups = "drop")
+    
+    p <- ggplot(df_resumo_est, aes(x = estrato, y = media_vol, fill = estrato)) +
+      geom_col(alpha = 0.9) +
+      theme_minimal() +
+      labs(x = "Estágio / Estrato", y = "Média de Volume por Parcela (m³)") +
+      theme(legend.position = "none")
+    
+    ggplotly(p) %>% config(toImageButtonOptions = list(format = "png", width = 1200, height = 800, scale = 2, filename = "grafico_media_estrato"))
+  })
+  
+  output$mapa_arvores <- renderLeaflet({
+    req(resultados())
+    
+    df_mapa <- resultados()$dados_arvore %>% 
+      filter(!is.na(coord_x) & !is.na(coord_y)) %>%
+      filter(abs(coord_x) <= 180 & abs(coord_y) <= 90)
+    
+    if(nrow(df_mapa) > 0) { 
+      
+      popup_base <- paste0(
+        "<b>🌿 Nº da Árvore:</b> ", df_mapa$n_arvore, ifelse(df_mapa$is_morta, " <span style='color:red;'><b>(Morta)</b></span>", ""), "<br>",
+        "<b>Estrato:</b> ", df_mapa$estrato, "<br>",
+        "<b>Nome Científico:</b> <i>", df_mapa$nome_cientifico, "</i><br>",
+        "<b>Nome Popular:</b> ", ifelse(is.na(df_mapa$nome_popular) | df_mapa$nome_popular == "", "Não informado", df_mapa$nome_popular), "<br>",
+        "<b>Família:</b> ", ifelse(is.na(df_mapa$familia) | df_mapa$familia == "", "Não informada", df_mapa$familia), "<br>",
+        "<b>📏 DAP Equivalente:</b> ", round(df_mapa$dap_equivalente_cm, 2), " cm<br>",
+        "<b>↕️ Altura Média:</b> ", round(df_mapa$ht_media, 2), " m<br>",
+        "<b>🪵 Vol. Físico (Amostrado):</b> ", round(df_mapa$volume_total_m3, 4), " m³"
+      )
+      
+      if(!is.null(input$is_testemunha) && input$is_testemunha) {
+        popup_base <- paste0(popup_base, "<br><b>📈 Vol. Extrapolado:</b> ", round(df_mapa$volume_extrapolado_m3, 4), " m³")
+      }
+      
+      leaflet(df_mapa, options = leafletOptions(maxZoom = 24)) %>% 
+        addTiles(
+          group = "OpenStreetMap", 
+          options = tileOptions(maxZoom = 24, maxNativeZoom = 18)
+        ) %>% 
+        addProviderTiles(
+          providers$Esri.WorldImagery, 
+          group = "Satélite", 
+          options = providerTileOptions(
+            maxZoom = 24,       
+            maxNativeZoom = 17  
+          )
+        ) %>% 
+        addLayersControl(baseGroups = c("Satélite", "OpenStreetMap"), options = layersControlOptions(collapsed = FALSE)) %>% 
+        addCircleMarkers(
+          lng = ~coord_x, 
+          lat = ~coord_y, 
+          radius = 6, 
+          color = "black", 
+          weight = 1.5, 
+          stroke = TRUE, 
+          fillColor = ~ifelse(is_morta, "red", "#ff7f00"), 
+          fillOpacity = 0.9, 
+          label = ~as.character(n_arvore),
+          labelOptions = labelOptions(
+            noHide = TRUE, 
+            direction = 'top', 
+            textOnly = FALSE, 
+            style = list(
+              "background" = "rgba(255,255,255,0.85)", 
+              "padding" = "1px 4px", 
+              "border-radius" = "3px", 
+              "font-weight" = "bold", 
+              "font-size" = "10px", 
+              "color" = "#001a33"
+            )
+          ),
+          popup = popup_base
+        ) 
+    }
+  })
+  
+  output$grafico_especies <- renderPlotly({ 
+    req(resultados()); 
+    p <- ggplot(resultados()$fitossociologia %>% arrange(desc(`VT(m³)`)) %>% head(10), aes(x = reorder(`Nome Científico`, `VT(m³)`), y = `VT(m³)`)) + geom_col(fill = "#2c7fb8") + coord_flip() + theme_minimal() + labs(x = "", y = "Volume (m³)")
+    ggplotly(p) %>% config(toImageButtonOptions = list(format = "png", width = 1200, height = 800, scale = 2, filename = "grafico_top_especies"))
+  })
+  
+  output$grafico_fustes_dap <- renderPlotly({ 
+    req(resultados())
+    df_dap <- resultados()$dist_diametrica %>%
+      select(`Classe Diamétrica`, `Nº de Indivíduos Amostrados`, `Nº de Fustes Amostrados`) %>%
+      pivot_longer(cols = c(`Nº de Indivíduos Amostrados`, `Nº de Fustes Amostrados`), names_to = "Tipo", values_to = "Quantidade")
+    
+    p <- ggplot(df_dap, aes(x = `Classe Diamétrica`, y = Quantidade, fill = Tipo)) + 
+      geom_col(position = "dodge") + 
+      scale_fill_manual(values = c("Nº de Indivíduos Amostrados" = "#31a354", "Nº de Fustes Amostrados" = "#addd8e")) +
+      theme_minimal() + 
+      labs(x = "", y = "Quantidade", fill = "") +
+      theme(legend.position = "bottom")
+      
+    ggplotly(p) %>% 
+      layout(legend = list(orientation = "h", x = 0.2, y = -0.2)) %>%
+      config(toImageButtonOptions = list(format = "png", width = 1200, height = 800, scale = 2, filename = "grafico_indiv_fustes"))
+  })
+  
+  output$grafico_eco <- renderPlotly({ 
+    req(resultados()); 
+    if(nrow(resultados()$ecologico) > 0) { 
+      p <- ggplot(resultados()$ecologico, aes(x = reorder(`Grupo Ecológico`, `%`), y = `%`, fill = `Grupo Ecológico`)) + geom_col() + coord_flip() + theme_minimal() + labs(x = "", y = "Proporção (%)") + theme(legend.position = "none"); 
+      ggplotly(p) %>% config(toImageButtonOptions = list(format = "png", width = 1200, height = 800, scale = 2, filename = "grafico_grupo_ecologico"))
+    } 
+  })
+  
+  # --- GRÁFICOS HIPSOMÉTRICO COM LINHA DE TENDÊNCIA E CORRELAÇÃO ---
+  output$grafico_hipso <- renderPlotly({ 
+    req(resultados())
+    df_hipso <- resultados()$dados_arvore %>% filter(!is.na(dap_equivalente_cm) & !is.na(ht_media) & !is_morta)
+    if(nrow(df_hipso) > 1) {
+      r_val <- cor(df_hipso$dap_equivalente_cm, df_hipso$ht_media, use = "complete.obs")
+      p <- ggplot(df_hipso, aes(x = dap_equivalente_cm, y = ht_media)) + 
+        geom_point(color = "#d95f0e", alpha = 0.6) + 
+        geom_smooth(method = "lm", color = "#001a33", linetype = "dashed", se = FALSE) +
+        theme_minimal() + 
+        labs(x = "DAP (cm)", y = "Altura (m)", subtitle = paste0("Coeficiente de Correlação (r) = ", round(r_val, 3)))
+      ggplotly(p) %>% config(toImageButtonOptions = list(format = "png", width = 1200, height = 800, scale = 2, filename = "grafico_hipsometrico"))
+    } else {
+      return(NULL)
+    }
+  })
+  
+  output$grafico_habito <- renderPlotly({ req(resultados()); df_habito <- resultados()$dados_arvore %>% filter(!is.na(habito) & !is_morta); if(nrow(df_habito) > 0) { p <- ggplot(df_habito %>% group_by(habito) %>% summarise(n = n()) %>% mutate(prop = (n/sum(n))*100), aes(x = reorder(habito, prop), y = prop, fill = habito)) + geom_col() + coord_flip() + theme_minimal() + labs(x = "", y = "Proporção (%)") + theme(legend.position = "none"); ggplotly(p) %>% config(toImageButtonOptions = list(format = "png", width = 1200, height = 800, scale = 2, filename = "grafico_habito"))} })
+  output$grafico_dispersao <- renderPlotly({ req(resultados()); df_disp <- resultados()$dados_arvore %>% filter(!is.na(dispersao) & !is_morta); if(nrow(df_disp) > 0) { p <- ggplot(df_disp %>% group_by(dispersao) %>% summarise(n = n()) %>% mutate(prop = (n/sum(n))*100), aes(x = reorder(dispersao, prop), y = prop, fill = dispersao)) + geom_col() + coord_flip() + theme_minimal() + labs(x = "", y = "Proporção (%)") + theme(legend.position = "none"); ggplotly(p) %>% config(toImageButtonOptions = list(format = "png", width = 1200, height = 800, scale = 2, filename = "grafico_dispersao"))} })
+  
+  output$grafico_ivi <- renderPlotly({
+    req(resultados())
+    if(is.null(resultados()$vol_parcelas)) return(NULL) 
+    
+    df_ivi <- resultados()$fitossociologia %>% 
+      arrange(desc(`IVI (%)`)) %>% 
+      head(10) %>%
+      select(`Nome Científico`, `DR`, `DoR`, `FR (%)`) %>%
+      pivot_longer(cols = c(`DR`, `DoR`, `FR (%)`), names_to = "Parâmetro", values_to = "Valor")
+    
+    ordem_especies <- resultados()$fitossociologia %>% arrange(desc(`IVI (%)`)) %>% head(10) %>% pull(`Nome Científico`)
+    df_ivi$`Nome Científico` <- factor(df_ivi$`Nome Científico`, levels = rev(ordem_especies))
+    
+    p <- ggplot(df_ivi, aes(x = `Nome Científico`, y = Valor, fill = Parâmetro)) +
+      geom_col(position = "stack", alpha = 0.85) +
+      coord_flip() +
+      scale_fill_manual(values = c("DR" = "#1b9e77", "DoR" = "#d95f02", "FR (%)" = "#7570b3")) +
+      theme_minimal() +
+      labs(x = "", y = "Contribuição para o IVI (%)") +
+      theme(legend.position = "bottom", legend.title = element_blank())
+    
+    ggplotly(p) %>% 
+      layout(legend = list(orientation = "h", x = 0.2, y = -0.2)) %>%
+      config(toImageButtonOptions = list(format = "png", width = 1200, height = 800, scale = 2, filename = "grafico_ivi_composicao"))
+  })
+  
+  output$grafico_vol_parcela <- renderPlotly({
+    req(resultados())
+    if(is.null(resultados()$vol_parcelas)) return(NULL)
+    
+    df_vol <- resultados()$vol_parcelas
+    media_vol <- mean(df_vol$vol_total, na.rm = TRUE)
+    
+    p <- ggplot(df_vol, aes(x = factor(parcela), y = vol_total)) +
+      geom_col(fill = "#8da0cb", alpha = 0.9) +
+      geom_hline(yintercept = media_vol, linetype = "dashed", color = "red", size = 0.8) + 
+      theme_minimal() +
+      labs(x = "Número da Parcela", y = "Volume Físico Amostrado (m³) - (Vivos e Mortos)") +
+      theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 10))
+    
+    ggplotly(p) %>%
+      layout(annotations = list(
+        x = 0, y = media_vol, xref = "paper", yref = "y",
+        text = paste("Média:", round(media_vol, 2)), showarrow = FALSE,
+        xanchor = "left", yanchor = "bottom", font = list(color = "red")
+      )) %>%
+      config(toImageButtonOptions = list(format = "png", width = 1600, height = 900, scale = 2, filename = "grafico_volume_parcela"))
+  })
+  
+  dt_opt <- list(paging = FALSE, scrollX = TRUE, searching = TRUE, info = FALSE)
+  dt_cls <- 'cell-border stripe hover order-column'
+  output$tab_resumo_geral <- renderDT({ req(resultados()); datatable(resultados()$geral, class = dt_cls, rownames = FALSE, options = list(paging = FALSE, dom = 't')) })
+  output$tab_fitossociologia <- renderDT({ req(resultados()); datatable(resultados()$fitossociologia %>% mutate(across(where(is.numeric), ~round(., 4))), class = dt_cls, rownames = FALSE, options = dt_opt) })
+  output$tab_vertical <- renderDT({ req(resultados()); datatable(resultados()$vertical %>% mutate(across(where(is.numeric), ~round(., 4))), class = dt_cls, rownames = FALSE, options = dt_opt) })
+  output$tab_diversidade <- renderDT({ req(resultados()); datatable(resultados()$diversidade %>% mutate(across(where(is.numeric), ~round(., 4))), class = dt_cls, rownames = FALSE, options = list(pageLength = 10, scrollX = TRUE)) })
+  output$tab_familia <- renderDT({ req(resultados()); datatable(resultados()$familias, class = dt_cls, rownames = FALSE, options = dt_opt) })
+  output$tab_rendimento <- renderDT({ req(resultados()); datatable(resultados()$rendimento %>% mutate(across(where(is.numeric), ~round(., 4))), class = dt_cls, rownames = FALSE, options = dt_opt) })
+  output$tab_dist_diametrica <- renderDT({ req(resultados()); datatable(resultados()$dist_diametrica, class = dt_cls, rownames = FALSE, options = list(paging = FALSE, dom = 't')) })
+  
+  output$tab_rendimento_sp_dap <- renderDT({ 
+    req(resultados())
+    datatable(resultados()$rendimento_sp_dap %>% mutate(across(where(is.numeric), ~round(., 4))), class = dt_cls, rownames = FALSE, options = dt_opt) 
+  })
+  
+  output$tab_ecologico <- renderDT({ req(resultados()); datatable(resultados()$ecologico, class = dt_cls, rownames = FALSE, options = dt_opt) })
+  output$tab_protegidas <- renderDT({ req(resultados()); datatable(resultados()$protegidas %>% mutate(across(where(is.numeric), ~round(., 4))), class = dt_cls, rownames = FALSE, options = dt_opt) })
+  
+  # --- EXPORTAÇÃO DE DADOS TABULARES ---
+  output$dl_resumo <- downloadHandler(filename = "9_Resumo_Geral.csv", content = function(file) { write_excel_csv2(resultados()$geral, file) })
+  output$dl_fito <- downloadHandler(filename = "1_Fitossociologia.csv", content = function(file) { write_excel_csv2(resultados()$fitossociologia, file) })
+  output$dl_vertical <- downloadHandler(filename = "2_Estrutura_Vertical.csv", content = function(file) { write_excel_csv2(resultados()$vertical, file) })
+  output$dl_familia <- downloadHandler(filename = "8_Resumo_Familias.csv", content = function(file) { write_excel_csv2(resultados()$familias, file) })
+  output$dl_rendimento <- downloadHandler(filename = "3_Rendimento_Classes.csv", content = function(file) { write_excel_csv2(resultados()$rendimento, file) })
+  output$dl_dist <- downloadHandler(filename = "4_Distribuicao_Diametrica.csv", content = function(file) { write_excel_csv2(resultados()$dist_diametrica, file) })
+  output$dl_rendimento_sp_dap <- downloadHandler(filename = "11_Rendimento_Volume_por_Especie_DAP.csv", content = function(file) { write_excel_csv2(resultados()$rendimento_sp_dap, file) })
+  output$dl_diversidade <- downloadHandler(filename = "10_Diversidade_Ecologica.csv", content = function(file) { write_excel_csv2(resultados()$diversidade, file) })
+  output$dl_eco_sucessao <- downloadHandler(filename = "5_Analise_Sucessao.csv", content = function(file) { write_excel_csv2(resultados()$ecologico, file) })
+  output$dl_eco_protegidas <- downloadHandler(filename = "6_Especies_Protegidas.csv", content = function(file) { write_excel_csv2(resultados()$protegidas, file) })
+  
+  # --- EXPORTAÇÃO DE DADOS ESPACIAIS (ROBUSTA VIA PACOTE ZIP) ---
+  output$dl_shapefile <- downloadHandler(
+    filename = function() {
+      paste0("inventario_shapefile_", Sys.Date(), ".zip")
+    },
+    content = function(file) {
+      req(resultados())
+      df_espacial <- resultados()$dados_arvore %>% filter(!is.na(coord_x) & !is.na(coord_y))
+      
+      if(nrow(df_espacial) > 0) {
+        sf_obj <- st_as_sf(df_espacial, coords = c("coord_x", "coord_y"), crs = 4326)
+        
+        # Cria uma pasta temporária isolada
+        tmpfolder <- file.path(tempdir(), paste0("shp_export_", as.numeric(Sys.time())))
+        dir.create(tmpfolder, showWarnings = FALSE)
+        
+        shape_path <- file.path(tmpfolder, "arvores_inventario.shp")
+        suppressWarnings(st_write(sf_obj, dsn = shape_path, driver = "ESRI Shapefile", quiet = TRUE, delete_dsn = TRUE))
+        
+        # Coleta os arquivos gerados (.shp, .shx, .dbf, .prj, .cpg)
+        arquivos_gerados <- list.files(tmpfolder, full.names = TRUE)
+        
+        if (requireNamespace("zip", quietly = TRUE)) {
+          zip::zipr(zipfile = file, files = arquivos_gerados, mode = "cherry-pick")
+        } else {
+          owd <- setwd(tmpfolder)
+          on.exit(setwd(owd))
+          zip(zipfile = file, files = list.files("."))
+        }
+      }
+    },
+    contentType = "application/zip"
+  )
+  
+  output$dl_kml <- downloadHandler(
+    filename = function() {
+      paste0("inventario_kml_", Sys.Date(), ".kml")
+    },
+    content = function(file) {
+      req(resultados())
+      df_espacial <- resultados()$dados_arvore %>% filter(!is.na(coord_x) & !is.na(coord_y))
+      
+      if(nrow(df_espacial) > 0) {
+        sf_obj <- st_as_sf(df_espacial, coords = c("coord_x", "coord_y"), crs = 4326)
+        suppressWarnings(st_write(sf_obj, dsn = file, driver = "KML", delete_dsn = TRUE))
+      }
+    },
+    contentType = "application/vnd.google-earth.kml+xml"
+  )
+}
+
+shinyApp(ui = ui, server = server)
