@@ -1,0 +1,55 @@
+# 🌊 Watershed Morphometric Analysis Tool
+
+An interactive Web Application built in **R Shiny** for automated watershed delineation, hydrological processing, morphometric index extraction, and terrain surface analysis. 
+
+Designed for hydro-geomorphological research, environmental consulting, and water resources management.
+
+---
+
+## 🌟 Key Features
+
+* **Dynamic DEM Acquisition:** Automatically fetches elevation data anywhere on Earth using **AWS Terrain Tiles (30m)** or **SRTM (90m)** via cloud access, with options for custom raster file uploads (.tif).
+* **Automated Watershed Delineation:** Uses **WhiteboxTools** algorithms to perform sink breaching, flow direction (D8), flow accumulation, and pour-point snapping (with dynamic search radius safety).
+* **Comprehensive Morphometric Analysis:** Automatically calculates core hydro-geomophological indices:
+  * **Geometry:** Area, Perimeter, Main Channel Length, Drainage Density.
+  * **Shape Parameters:** Gravelius Compactness Coefficient ($K_c$), Form Factor ($K_f$), Elongation Ratio ($R_e$).
+  * **Relief & Slope:** Altimetric Amplitude, Mean Slope Percentage, Time of Concentration ($T_c$).
+* **Advanced Geomorphometry & Landforms:**
+  * **Geomorphons:** Machine-learning-based classification of landform elements (ridges, valleys, slopes, peaks).
+  * **Profile Curvature:** Flow acceleration and surface concavity/convexity metrics.
+  * **Hillshade & Slope Rasters.**
+* **Interactive Topographic Profiles:** Real-time generation of longitudinal stream profiles and user-drawn cross-section profiles using **Plotly**.
+* **Batch Processing Support:** Accepts single point selection on the interactive map or batch upload of multiple pour points via Shapefiles (.shp) or KML files.
+* **Full Data Export:** Download raw rasters, boundary vectors (.shp), and morphometric summary tables in standard formats (.xlsx and .zip packages).
+
+---
+
+## 🛠️ Tech Stack & Dependencies
+
+The app is entirely built in **R** relying on spatial geospatial data science libraries:
+
+* **UI & Reactive Framework:** `shiny`, `bslib`, `plotly`
+* **Geospatial Processing:** `sf`, `terra`, `whitebox`, `smoothr`
+* **Data Sources & Elevation:** `elevatr`, `geodata`
+* **Mapping & Drawing:** `leaflet`, `leaflet.extras`
+* **Exporting:** `openxlsx`, `zip`
+
+---
+
+## 🚀 How to Run Locally
+
+### Prerequisites
+Make sure you have [R](https://cloud.r-project.org/) and [RStudio](https://posit.co/download/rstudio-desktop/) installed.
+
+### 1. Install Required Packages
+Run the following script in your R console to install all required dependencies:
+
+```r
+install.packages(c(
+  "shiny", "bslib", "leaflet", "leaflet.extras", "sf", "terra", 
+  "zip", "dplyr", "units", "elevatr", "geodata", "openxlsx", 
+  "smoothr", "plotly", "viridis", "whitebox"
+))
+
+# Install the underlying WhiteboxTools executable engine
+whitebox::install_whitebox()
