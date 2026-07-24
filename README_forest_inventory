@@ -1,0 +1,39 @@
+Sistema de Análise de Inventário Florestal
+Uma plataforma web interativa desenvolvida em R (Shiny) para a automatização, processamento e análise de dados de inventários florestais e fitossociológicos. A ferramenta foi projetada para atender às demandas técnicas de licenciamento ambiental e supressão de vegetação, oferecendo suporte desde a estatística de amostragem até a exportação de dados geoespaciais.
+
+Desenvolvido para as rotinas e exigências metodológicas do Grupo G5S Projetos e Consultoria, por Heitor C. Lacerda.
+
+✨ Principais Funcionalidades
+O sistema foi construído para lidar com a alta complexidade e variabilidade de fragmentos florestais nativos, suportando três delineamentos amostrais distintos:
+
+Censo (100%): Levantamento total da área de intervenção (ideal para supressão de indivíduos isolados).
+
+Amostragem Casual Simples: Para fragmentos contínuos e homogêneos.
+
+Amostragem Estratificada: Para áreas heterogêneas subdivididas em estágios sucessionais ou fitofisionomias.
+
+⚙️ Recursos Analíticos Integrados
+Extrapolação Corretiva (Inventário Testemunha): Módulo dedicado para áreas de autuação. O sistema calcula automaticamente o Fator de Extrapolação, projetando o volume e a contagem de indivíduos da área fisicamente amostrada para a extensão total da intervenção.
+
+Cálculos Volumétricos: Equação baseada no Modelo CETEC para o bioma local, com definição paramétrica de Fator de Empilhamento para conversão em Estéreo (st).
+
+Fitossociologia Horizontal e Vertical: Cálculo automatizado de Densidade, Dominância e Frequência (Absolutas e Relativas), Índice de Valor de Importância (IVI e IVIAmp), Valor de Cobertura (VC) e Posição Sociológica (PSR) em três estratos de altura.
+
+Dinâmica Sucessional e Rendimento: Agrupamento automático em classes diamétricas (Curva J-invertido) com separação de indivíduos vs. fustes e cálculo de rendimento lenhoso por multiprodutos (DAP < 15, 15-30, 30-45, > 45 cm).
+
+Estatística de Amostragem: Cálculo rigoroso de variância, erro padrão, coeficiente de variação, erro amostral e suficiência amostral (para um erro legal admissível de 10%).
+
+Análises Ecológicas: Geração instantânea de índices de diversidade (Shannon-Weaver, Simpson, Pielou, Quociente de Jentsch), além de triagem de espécies protegidas/imunes de corte.
+
+Mapeamento e SIG: Conversão inteligente de coordenadas (GMS ou Graus Decimais) com renderização em mapa interativo (Leaflet) e exportação nativa para Shapefile (.shp) e KML.
+
+🛠️ Pré-requisitos e Instalação
+A plataforma foi desenvolvida em R. Para executá-la localmente, é necessário ter o R e o RStudio instalados, além das seguintes bibliotecas:
+
+R
+# Instalação dos pacotes necessários
+pacotes <- c("shiny", "tidyverse", "DT", "leaflet", "plotly", 
+             "sf", "zip", "bslib", "shinycssloaders")
+
+instalados <- pacotes %in% rownames(installed.packages())
+if(any(!instalados)) install.packages(pacotes[!instalados])
