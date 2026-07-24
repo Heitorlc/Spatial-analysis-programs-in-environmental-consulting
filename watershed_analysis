@@ -1,0 +1,262 @@
+# -------------------------------------------------------------------------
+# PROGRAM: Watershed Morphometric Analysis Tool
+# AUTHOR: Heitor Carvalho Lacerda
+# -------------------------------------------------------------------------
+
+library(shiny)
+library(bslib)
+library(leaflet)
+library(leaflet.extras)
+library(sf)
+library(terra)
+library(zip)
+library(dplyr)
+library(units)
+library(whitebox)
+library(elevatr)
+library(geodata)
+library(openxlsx) 
+library(smoothr)  
+library(plotly)
+library(viridis)
+
+# -------------------------------------------------------------------------
+# 1. USER INTERFACE (UI)
+# -------------------------------------------------------------------------
+
+ui <- page_sidebar(
+  title = "Watershed Morphometric Analysis",
+  theme = bs_theme(version = 5, preset = "flatly"),
+  
+  sidebar = sidebar(
+    width = 350,
+    h5("1. DEM Source"),
+    selectInput("mde_source", "Digital Elevation Model:",
+                choices = list(
+                  "Dynamic Cloud Access" = c("AWS Terrain 30m" = "aws", "SRTM GL3 90m" = "srtm_90"),
+                  "Local File Upload" = c("Custom DEM File" = "custom")
+                )),
+    
+    conditionalPanel("input.mde_source == 'custom'", fileInput("mde_file", "Upload DEM (.tif)")),
+    
+    hr(),
+    h5("2. Pour Point Location"),
+    radioButtons("input_mode", "Selection Mode:", 
+                 choices = c("Single Point (Click)" = "single", "Multiple Points (Batch)" = "batch")),
+    
+    conditionalPanel(
+      "input.input_mode == 'single'",
+      p(class = "text-muted", "Click on the map to place a pour point.")
+    ),
+    
+    conditionalPanel(
+      "input.input_mode == 'batch'",
+      fileInput("batch_file", "Upload Points (SHP/KML)", accept = c(".shp", ".kml", ".dbf", ".shx", ".prj"))
+    ),
+
+    hr(),
+    h5("3. Parameters"),
+    numericInput("threshold", "Stream Threshold (Area in km²):", value = 0.1, min = 0.01, step = 0.1),
+    
+    actionButton("process_btn", "Run Analysis", class = "btn-primary w-100", icon = icon("gears")),
+    
+    hr(),
+    uiOutput("selector_ui") # Dynamic selector for multiple watersheds
+  ),
+  
+  navset_card_underline(
+    id = "main_tabs",
+    
+    nav_panel("1. Interactive Map", icon = icon("map"), 
+              leafletOutput("map_principal", height = "75vh")),
+    
+    nav_panel("2. Morphometric Indices", icon = icon("table"), 
+              downloadButton("dl_excel", "Export to Excel", class = "btn-success btn-sm mb-3"),
+              tableOutput("table_indices")),
+    
+    nav_panel("3. Topographic Profiles", icon = icon("chart-line"),
+              card(card_header("Longitudinal Stream Profile"), plotlyOutput("perfil_long", height = "350px")),
+              card(card_header("Cross-Section Profile (Drawn Segment)"), plotlyOutput("perfil_trans", height = "350px"))),
+    
+    nav_panel("4. Terrain Analysis", icon = icon("mountain"),
+              layout_columns(
+                card(card_header("Hillshade"), plotOutput("plot_hill")),
+                card(card_header("Slope (%)"), plotOutput("plot_slope"))
+              ),
+              layout_columns(
+                card(card_header("Geomorphons"), plotOutput("plot_geo")),
+                card(card_header("Profile Curvature"), plotOutput("plot_curv"))
+              )),
+    
+    nav_panel("5. Export Data", icon = icon("download"),
+              p("Download all generated spatial vectors and rasters."),
+              downloadButton("dl_zip", "Download Complete Package (.zip)", class = "btn-primary w-100"))
+  ),
+  
+  tags$footer(
+    style = "text-align: center; padding: 15px; font-size: 0.85em; color: #555; border-top: 1px solid #dee2e6;",
+    "Developed by ", strong("Heitor Carvalho Lacerda"), 
+    " | Geographer | Ph.D. in Geography | ",
+    tags$a(href = "https://www.linkedin.com/in/heitorclacerda/", target = "_blank", "LinkedIn")
+  )
+)
+
+# -------------------------------------------------------------------------
+# 2. SERVER LOGIC
+# -------------------------------------------------------------------------
+
+server <- function(input, output, session) {
+  
+  crs_alvo <- "EPSG:31983"
+  v <- reactiveValues(pts = NULL, results = list(), active_idx = 1)
+  
+  # Base Map Render
+  output$map_principal <- renderLeaflet({
+    leaflet() %>%
+      addProviderTiles(providers$Esri.WorldImagery, group = "Satellite") %>%
+      addProviderTiles(providers$OpenTopoMap, group = "Topography") %>%
+      addDrawToolbar(targetGroup = "drawing", polylineOptions = drawPolylineOptions(shapeOptions = drawShapeOptions(color = "yellow"))) %>%
+      setView(lng = -42.8712, lat = -20.7546, zoom = 12)
+  })
+
+  # Point Selection Handlers
+  observeEvent(input$map_principal_click, {
+    if(input$input_mode == "single") {
+      v$pts <- data.frame(id = 1, lat = input$map_principal_click$lat, lng = input$map_principal_click$lng)
+      leafletProxy("map_principal") %>% clearMarkers() %>% addMarkers(lng = v$pts$lng, lat = v$pts$lat)
+    }
+  })
+
+  observeEvent(input$batch_file, {
+    req(input$batch_file)
+    tmp_dir <- tempdir(); files <- input$batch_file
+    for (i in 1:nrow(files)) file.rename(files$datapath[i], file.path(tmp_dir, files$name[i]))
+    f <- file.path(tmp_dir, files$name[grep("\\.(shp|kml)$", files$name)])
+    shp <- st_read(f, quiet = T) %>% st_transform(4326)
+    if(!all(st_geometry_type(shp) == "POINT")) shp <- st_centroid(shp)
+    coords <- st_coordinates(shp)
+    v$pts <- data.frame(id = 1:nrow(coords), lat = coords[,2], lng = coords[,1])
+    leafletProxy("map_principal") %>% clearMarkers() %>% addMarkers(data = shp)
+  })
+
+  # Dynamic Selector for Multiple Watersheds
+  output$selector_ui <- renderUI({
+    req(length(v$results) > 1)
+    selectInput("active_bacia", "Select Watershed to Inspect:", 
+                choices = setNames(1:length(v$results), paste("Watershed", 1:length(v$results))))
+  })
+
+  observeEvent(input$active_bacia, { v$active_idx <- as.numeric(input$active_bacia) })
+
+  # --- CORE PROCESSING ---
+  observeEvent(input$process_btn, {
+    req(v$pts)
+    v$results <- list()
+    
+    withProgress(message = 'Processing Watershed Morphometry...', value = 0, {
+      for(i in 1:nrow(v$pts)) {
+        incProgress(1/nrow(v$pts), detail = paste("Watershed", i))
+        
+        try({
+          # 1. Spatial Buffer & DEM Fetch
+          pt <- st_sfc(st_point(c(v$pts$lng[i], v$pts$lat[i])), crs = 4326)
+          pt_utm <- st_transform(pt, crs_alvo)
+          buffer <- st_buffer(pt_utm, 15000)
+          
+          if(input$mde_source == "aws") mde <- rast(get_elev_raster(pt, z=12, override_size_check=T)) %>% project(crs_alvo) %>% crop(buffer)
+          else if(input$mde_source == "srtm_90") mde <- rast(geodata::elevation_3s(v$pts$lng[i], v$pts$lat[i], tempdir())) %>% project(crs_alvo) %>% crop(buffer)
+          else mde <- project(rast(input$mde_file$datapath), crs_alvo) %>% crop(buffer)
+          
+          # 2. Whitebox Engine Hydrology
+          tmp_dem <- tempfile(fileext=".tif"); writeRaster(mde, tmp_dem, overwrite=T)
+          tmp_fill <- tempfile(fileext=".tif"); wbt_breach_depressions(tmp_dem, tmp_fill)
+          tmp_facc <- tempfile(fileext=".tif"); wbt_d8_flow_accumulation(tmp_fill, tmp_facc)
+          tmp_fdir <- tempfile(fileext=".tif"); wbt_d8_pointer(tmp_fill, tmp_fdir)
+          
+          # Dynamic Snap Distance
+          tmp_p <- tempfile(fileext=".shp"); st_write(pt_utm, tmp_p, quiet=T)
+          tmp_snap <- tempfile(fileext=".shp"); wbt_snap_pour_points(tmp_p, tmp_facc, tmp_snap, snap_dist = max(50, res(mde)[1]*1.5))
+          
+          tmp_ws <- tempfile(fileext=".tif"); wbt_watershed(tmp_fdir, tmp_snap, tmp_ws)
+          tmp_ws_v <- tempfile(fileext=".shp"); wbt_raster_to_vector_polygons(tmp_ws, tmp_ws_v)
+          
+          bacia <- smoothr::smooth(st_read(tmp_ws_v, quiet=T) %>% st_set_crs(crs_alvo), method="ksmooth")
+          mde_clip <- crop(mde, bacia, mask=T)
+          
+          # 3. Stream Network & Main Channel
+          limiar <- ceiling(input$threshold / ((res(mde)[1]^2)/1e6))
+          tmp_str <- tempfile(fileext=".tif"); wbt_extract_streams(tmp_facc, tmp_str, threshold=limiar)
+          tmp_str_v <- tempfile(fileext=".shp"); wbt_raster_streams_to_vector(tmp_str, tmp_fdir, tmp_str_v)
+          tmp_long <- tempfile(fileext=".shp"); wbt_longest_flowpath(tmp_fill, tmp_ws, tmp_long)
+          
+          rios <- st_read(tmp_str_v, quiet=T) %>% st_set_crs(crs_alvo) %>% st_intersection(bacia)
+          canal <- st_read(tmp_long, quiet=T) %>% st_set_crs(crs_alvo)
+          
+          # 4. Morphometric Indices Computation
+          A <- as.numeric(st_area(bacia))/1e6
+          P <- as.numeric(st_length(st_cast(bacia, "MULTILINESTRING")))/1e3
+          L <- as.numeric(st_length(canal))/1e3
+          Lt <- if(nrow(rios)>0) as.numeric(sum(st_length(rios)))/1e3 else 0
+          
+          slope_p <- tan(terrain(mde_clip, "slope", unit="radians"))*100
+          alt_range <- as.numeric(minmax(mde_clip)[2] - minmax(mde_clip)[1])
+          
+          indices <- data.frame(
+            Parameter = c("Total Area (km²)", "Perimeter (km)", "Main Channel Length (km)", "Drainage Density (km/km²)", 
+                          "Gravelius Index (Kc)", "Form Factor (Kf)", "Elongation Ratio (Re)", 
+                          "Relief Relief/Amplitude (m)", "Mean Slope (%)", "Time of Concentration (min)"),
+            Value = c(round(A,2), round(P,2), round(L,2), round(Lt/A,2), round(0.28*(P/sqrt(A)),3), round(A/(L^2),3), round((2*sqrt(A/pi))/L,3), round(alt_range,1), round(global(slope_p, "mean", na.rm=T)[1,1],2), round(57*((L^3)/alt_range)^0.385,2))
+          )
+          
+          # 5. Geomorphons & Profile Curvature
+          tmp_geo <- tempfile(fileext=".tif"); wbt_geomorphons(tmp_fill, tmp_geo, search=50)
+          tmp_curv <- tempfile(fileext=".tif"); wbt_profile_curvature(tmp_fill, tmp_curv)
+          
+          v$results[[i]] <- list(
+            bacia = bacia, rios = rios, canal = canal, 
+            mde = mde_clip, indices = indices,
+            slope = slope_p, 
+            hill = shade(terrain(mde_clip, "slope", unit="radians"), terrain(mde_clip, "aspect", unit="radians")),
+            geo = crop(rast(tmp_geo), bacia, mask=T),
+            curv = crop(rast(tmp_curv), bacia, mask=T)
+          )
+          
+          leafletProxy("map_principal") %>%
+            addPolygons(data = st_transform(bacia, 4326), color = "red", weight = 2, fillOpacity = 0.1) %>%
+            addPolylines(data = st_transform(rios, 4326), color = "blue", weight = 1)
+        })
+      }
+    })
+  })
+
+  # --- RENDERS ---
+  output$table_indices <- renderTable({ req(v$results); v$results[[v$active_idx]]$indices })
+  
+  output$perfil_long <- renderPlotly({
+    req(v$results)
+    res_m <- v$results[[v$active_idx]]
+    pts <- st_cast(st_segmentize(res_m$canal, res(res_m$mde)[1]), "POINT")
+    alts <- terra::extract(res_m$mde, vect(pts))[, 2]
+    dist <- c(0, cumsum(sqrt(diff(st_coordinates(pts)[,1])^2 + diff(st_coordinates(pts)[,2])^2)))/1000
+    plot_ly(x=dist, y=alts, type='scatter', mode='lines', fill='tozeroy') %>% 
+      layout(xaxis=list(title="Distance (km)"), yaxis=list(title="Elevation (m)"))
+  })
+
+  output$plot_hill <- renderPlot({ req(v$results); plot(v$results[[v$active_idx]]$hill, col=gray.colors(100), main="") })
+  output$plot_slope <- renderPlot({ req(v$results); plot(v$results[[v$active_idx]]$slope, col=magma(100), main="") })
+  output$plot_geo <- renderPlot({ req(v$results); plot(v$results[[v$active_idx]]$geo, col=topo.colors(10), main="") })
+  output$plot_curv <- renderPlot({ req(v$results); plot(v$results[[v$active_idx]]$curv, col=RdBu.colors(100), main="") })
+
+  # Exports
+  output$dl_excel <- downloadHandler(
+    filename = "morphometric_indices.xlsx",
+    content = function(file) {
+      all_data <- do.call(rbind, lapply(1:length(v$results), function(i) {
+        df <- v$results[[i]]$indices; df$Watershed <- paste("Watershed", i); df
+      }))
+      openxlsx::write.xlsx(all_data, file)
+    }
+  )
+}
+
+shinyApp(ui, server)
